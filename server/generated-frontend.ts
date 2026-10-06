@@ -86,11 +86,125 @@ function initials(value: string): string {
 }
 
 function model(specification: MasterSpecification) {
+  const prompt = (specification.prompt || "").toLowerCase();
+  const name = (specification.productName || "").toLowerCase();
   const domainEntities = specification.entities.filter((entity) => entity !== "User");
-  const primaryEntity = domainEntities[0] ?? "Project";
+  const primaryEntity = domainEntities[0] ?? (/portfolio/i.test(prompt) || /portfolio/i.test(name) ? "Project" : /shop|store|e-?commerce/i.test(prompt) ? "Product" : /game/i.test(prompt) ? "ScoreEntry" : /blog/i.test(prompt) ? "Article" : "Project");
   const primaryLabel = title(primaryEntity);
   const primaryPlural = plural(primaryEntity);
-  const navItems = ["Overview", primaryPlural, domainEntities[1] ? plural(domainEntities[1]) : "Team", "Activity"];
+
+  const isPortfolio = /portfolio|resume|cv|personal website/i.test(prompt) || /portfolio/i.test(name);
+  const isCommerce = /shop|store|commerce|product catalog|market/i.test(prompt);
+  const isGame = /game|snake|arcade|play/i.test(prompt);
+  const isEducation = /student|school|course|learning|academy/i.test(prompt);
+
+  let heroHeadline = `Keep every <em>${primaryLabel.toLowerCase()}</em> moving.`;
+  let heroCta = `Create ${primaryLabel}`;
+  let heroSecondary = "View activity";
+  let visualTitle = "Performance";
+  let visualSubtitle = "This quarter";
+  let visualValue = "84.6%";
+  let visualDelta = "+12.4%";
+  let navItems = ["Overview", primaryPlural, domainEntities[1] ? plural(domainEntities[1]) : "Team", "Activity"];
+  let metrics = [
+    { label: `${primaryPlural} tracked`, value: "248", delta: "+12.4%", tone: "positive" },
+    { label: "Completed this week", value: "64", delta: "+8.1%", tone: "positive" },
+    { label: "Active collaborators", value: String(Math.max(8, specification.roles.length * 6)), delta: "Across all roles", tone: "neutral" },
+    { label: "System health", value: "99.9%", delta: "All services normal", tone: "positive" },
+  ];
+  let records = [
+    { name: `${primaryLabel} Alpha`, owner: "Maya Chen", status: "On track", progress: 82 },
+    { name: `${primaryLabel} Northstar`, owner: "Noah Williams", status: "Review", progress: 64 },
+    { name: `${primaryLabel} Meridian`, owner: "Ava Patel", status: "On track", progress: 91 },
+    { name: `${primaryLabel} Atlas`, owner: "Liam Brooks", status: "At risk", progress: 43 },
+  ];
+
+  if (isPortfolio) {
+    heroHeadline = `Crafting elegant, modern <em>digital experiences</em>.`;
+    heroCta = "Explore Projects";
+    heroSecondary = "Get in touch";
+    visualTitle = "Code Quality";
+    visualSubtitle = "Lighthouse & Test Score";
+    visualValue = "98/100";
+    visualDelta = "+5.2% vs avg";
+    navItems = ["Overview", "Projects", "Skills", "Articles", "Contact"];
+    metrics = [
+      { label: "Projects completed", value: "32", delta: "+8 this year", tone: "positive" },
+      { label: "Client satisfaction", value: "100%", delta: "5.0 ★ rating", tone: "positive" },
+      { label: "GitHub stars", value: "1.8k", delta: "Across open source", tone: "positive" },
+      { label: "Years experience", value: "6+", delta: "Full-stack & UI/UX", tone: "neutral" },
+    ];
+    records = [
+      { name: "ForgeWeb AI Engine", owner: "React 19 + Node.js", status: "Featured", progress: 95 },
+      { name: "Cloud Analytics Platform", owner: "TypeScript + Python", status: "Live", progress: 100 },
+      { name: "E-Commerce Design System", owner: "Tailwind + GSAP", status: "Open Source", progress: 88 },
+      { name: "Real-time Mobile Wallet", owner: "React Native + WebGL", status: "In progress", progress: 74 },
+    ];
+  } else if (isCommerce) {
+    heroHeadline = `Modern storefront built for <em>effortless sales</em>.`;
+    heroCta = "Browse Catalog";
+    heroSecondary = "Track Orders";
+    visualTitle = "Gross Volume";
+    visualSubtitle = "Monthly recurring";
+    visualValue = "$48.2k";
+    visualDelta = "+24.8%";
+    navItems = ["Overview", "Products", "Collections", "Orders", "Discounts"];
+    metrics = [
+      { label: "Products in stock", value: "1,240", delta: "+15 new items", tone: "positive" },
+      { label: "Orders fulfilled", value: "892", delta: "99.4% on time", tone: "positive" },
+      { label: "Average order value", value: "$68.50", delta: "+12% vs last mo", tone: "positive" },
+      { label: "Customer rating", value: "4.9 ★", delta: "Over 500 reviews", tone: "positive" },
+    ];
+    records = [
+      { name: "Minimalist Wireless Earbuds", owner: "Electronics", status: "In stock", progress: 92 },
+      { name: "Ergonomic Mechanical Keyboard", owner: "Accessories", status: "Trending", progress: 85 },
+      { name: "Matte Aluminum Laptop Stand", owner: "Workspace", status: "Low stock", progress: 34 },
+      { name: "USB-C Fast Charging Hub", owner: "Peripherals", status: "In stock", progress: 78 },
+    ];
+  } else if (isGame) {
+    heroHeadline = `Fast, responsive, and <em>fun gameplay</em>.`;
+    heroCta = "Start Playing";
+    heroSecondary = "Leaderboards";
+    visualTitle = "High Score";
+    visualSubtitle = "Global ranking";
+    visualValue = "12,450";
+    visualDelta = "Top 1%";
+    navItems = ["Play", "Leaderboard", "Achievements", "Settings"];
+    metrics = [
+      { label: "Games played", value: "14,200", delta: "Across all players", tone: "positive" },
+      { label: "Daily active players", value: "1,850", delta: "+18% growth", tone: "positive" },
+      { label: "Achievements unlocked", value: "48", delta: "12 secret badges", tone: "neutral" },
+      { label: "Server tick rate", value: "60 FPS", delta: "Zero input latency", tone: "positive" },
+    ];
+    records = [
+      { name: "Champion Round #42", owner: "PixelNinja", status: "Victory", progress: 100 },
+      { name: "Speedrun Challenge", owner: "ShadowFox", status: "2nd place", progress: 94 },
+      { name: "Survival Mode Stage 8", owner: "CyberSam", status: "Active", progress: 68 },
+      { name: "Arcade Gauntlet", owner: "RetroGamer", status: "Completed", progress: 100 },
+    ];
+  } else if (isEducation) {
+    heroHeadline = `Empowering modern <em>learning & teaching</em>.`;
+    heroCta = "Explore Courses";
+    heroSecondary = "View Grades";
+    visualTitle = "Student Success";
+    visualSubtitle = "Course completion";
+    visualValue = "92.4%";
+    visualDelta = "+6.8%";
+    navItems = ["Overview", "Courses", "Students", "Assignments", "Grades"];
+    metrics = [
+      { label: "Enrolled students", value: "1,450", delta: "+120 this semester", tone: "positive" },
+      { label: "Active courses", value: "38", delta: "Accredited syllabus", tone: "positive" },
+      { label: "Assignments submitted", value: "4,920", delta: "96% graded", tone: "positive" },
+      { label: "Average GPA", value: "3.75", delta: "Top tier performance", tone: "positive" },
+    ];
+    records = [
+      { name: "Advanced TypeScript & React", owner: "Dr. Sarah Lin", status: "Active", progress: 75 },
+      { name: "Database Systems & PostgreSQL", owner: "Prof. James Wood", status: "Final exam", progress: 90 },
+      { name: "UI/UX & Creative Engineering", owner: "Maya Chen", status: "Enrolling", progress: 40 },
+      { name: "Distributed Systems Architecture", owner: "Dr. Alan Turing", status: "Active", progress: 60 },
+    ];
+  }
+
   const configuredAreas = specification.architecture?.frontend?.pages ?? [
     "Role-aware dashboard",
     ...domainEntities.slice(0, 3).map((entity) => `${title(entity)} workspace`),
@@ -98,19 +212,7 @@ function model(specification: MasterSpecification) {
     "Settings and access management",
   ];
   const areas = configuredAreas.filter((area) => !/sign-in/i.test(area)).slice(0, 6);
-  const metrics = [
-    { label: `${primaryPlural} tracked`, value: "248", delta: "+12.4%", tone: "positive" },
-    { label: "Completed this week", value: "64", delta: "+8.1%", tone: "positive" },
-    { label: "Active collaborators", value: String(Math.max(8, specification.roles.length * 6)), delta: "Across all roles", tone: "neutral" },
-    { label: "System health", value: "99.9%", delta: "All services normal", tone: "positive" },
-  ];
-  const records = [
-    { name: `${primaryLabel} Alpha`, owner: "Maya Chen", status: "On track", progress: 82 },
-    { name: `${primaryLabel} Northstar`, owner: "Noah Williams", status: "Review", progress: 64 },
-    { name: `${primaryLabel} Meridian`, owner: "Ava Patel", status: "On track", progress: 91 },
-    { name: `${primaryLabel} Atlas`, owner: "Liam Brooks", status: "At risk", progress: 43 },
-  ];
-  return { primaryEntity, primaryLabel, primaryPlural, navItems, areas, metrics, records };
+  return { primaryEntity, primaryLabel, primaryPlural, navItems, areas, metrics, records, heroHeadline, heroCta, heroSecondary, visualTitle, visualSubtitle, visualValue, visualDelta };
 }
 
 export function buildGeneratedFrontend(specification: MasterSpecification): { app: string; styles: string; preview: string } {
@@ -125,6 +227,13 @@ export function buildGeneratedFrontend(specification: MasterSpecification): { ap
   const metricsLiteral = JSON.stringify(view.metrics);
   const recordsLiteral = JSON.stringify(view.records);
   const initialsLiteral = JSON.stringify(initials(specification.productName));
+  const heroHeadline = view.heroHeadline;
+  const heroCta = view.heroCta;
+  const heroSecondary = view.heroSecondary;
+  const visualTitle = view.visualTitle;
+  const visualSubtitle = view.visualSubtitle;
+  const visualValue = view.visualValue;
+  const visualDelta = view.visualDelta;
 
   const app = [
     'import { useLayoutEffect, useRef } from "react";',
@@ -162,8 +271,8 @@ export function buildGeneratedFrontend(specification: MasterSpecification): { ap
     "      </header>",
     '      <main className="preview-container">',
     '        <section id="overview" className="generated-hero app-hero">',
-    '          <div className="hero-copy reveal"><p className="eyebrow"><i className="signal-dot" /> Live workspace · Preview data</p><h1>Keep every <em>{primaryLabel.toLowerCase()}</em> moving.</h1><p className="hero-summary">{summary}</p><div className="hero-actions"><a className="primary-action" href="#workspace">Create {primaryLabel}<span>↗</span></a><a className="secondary-action" href="#activity">View activity</a></div><div className="hero-proof"><span className="avatar-stack"><i>MC</i><i>NW</i><i>AP</i></span><p><strong>{Math.max(8, navItems.length * 4)} teammates</strong><br />working securely today</p></div></div>',
-    '          <div className="hero-visual reveal" aria-label={`${primaryLabel} performance overview`}><div className="visual-top"><div><span>Performance</span><strong>This quarter</strong></div><button type="button">•••</button></div><div className="visual-value"><strong>84.6%</strong><span>+12.4%</span></div><div className="chart" aria-hidden="true">{[38, 54, 44, 67, 58, 79, 72, 92, 84, 100].map((height, index) => <i style={{ height: `${height}%` }} key={index} />)}</div><div className="visual-axis"><span>Week 1</span><span>Week 10</span></div></div>',
+    `          <div className="hero-copy reveal"><p className="eyebrow"><i className="signal-dot" /> Live workspace · Preview data</p><h1>${heroHeadline}</h1><p className="hero-summary">{summary}</p><div className="hero-actions"><a className="primary-action" href="#workspace">${heroCta}<span>↗</span></a><a className="secondary-action" href="#activity">${heroSecondary}</a></div><div className="hero-proof"><span className="avatar-stack"><i>MC</i><i>NW</i><i>AP</i></span><p><strong>{Math.max(8, navItems.length * 4)} teammates</strong><br />working securely today</p></div></div>`,
+    `          <div className="hero-visual reveal" aria-label={\`\${primaryLabel} performance overview\`}><div className="visual-top"><div><span>${visualTitle}</span><strong>${visualSubtitle}</strong></div><button type="button">•••</button></div><div className="visual-value"><strong>${visualValue}</strong><span>${visualDelta}</span></div><div className="chart" aria-hidden="true">{[38, 54, 44, 67, 58, 79, 72, 92, 84, 100].map((height, index) => <i style={{ height: \`\${height}%\` }} key={index} />)}</div><div className="visual-axis"><span>Week 1</span><span>Week 10</span></div></div>`,
     "        </section>",
     '        <section className="metric-grid" aria-label="Workspace metrics">{metrics.map((metric) => <article className="metric-card reveal" key={metric.label}><div><span>{metric.label}</span><button type="button" aria-label={`More about ${metric.label}`}>↗</button></div><strong>{metric.value}</strong><p className={metric.tone}>{metric.delta}</p></article>)}</section>',
     '        <section id="workspace" className="workspace-layout">',
@@ -233,8 +342,8 @@ export function buildGeneratedFrontend(specification: MasterSpecification): { ap
     '<div class="nav-actions"><button class="search-button" type="button"><span>Search</span><kbd>⌘ K</kbd></button><button class="avatar" type="button" aria-label="Open account menu">MC</button></div></div></header>',
     '<main class="preview-container">',
     '<section id="overview" class="generated-hero app-hero">',
-    `<div class="hero-copy reveal"><p class="eyebrow"><i class="signal-dot"></i> Live workspace · Preview data</p><h1>Keep every <em>${escapeHtml(view.primaryLabel.toLowerCase())}</em> moving.</h1><p class="hero-summary">${escapeHtml(specification.summary)}</p><div class="hero-actions"><a class="primary-action" href="#workspace">Create ${escapeHtml(view.primaryLabel)}<span>↗</span></a><a class="secondary-action" href="#activity">View activity</a></div><div class="hero-proof"><span class="avatar-stack"><i>MC</i><i>NW</i><i>AP</i></span><p><strong>${Math.max(8, view.navItems.length * 4)} teammates</strong><br />working securely today</p></div></div>`,
-    `<div class="hero-visual reveal" aria-label="${escapeHtml(view.primaryLabel)} performance overview"><div class="visual-top"><div><span>Performance</span><strong>This quarter</strong></div><button type="button">•••</button></div><div class="visual-value"><strong>84.6%</strong><span>+12.4%</span></div><div class="chart" aria-hidden="true">${barsHtml}</div><div class="visual-axis"><span>Week 1</span><span>Week 10</span></div></div>`,
+    `<div class="hero-copy reveal"><p class="eyebrow"><i class="signal-dot"></i> Live workspace · Preview data</p><h1>${heroHeadline}</h1><p class="hero-summary">${escapeHtml(specification.summary)}</p><div class="hero-actions"><a class="primary-action" href="#workspace">${heroCta}<span>↗</span></a><a class="secondary-action" href="#activity">${heroSecondary}</a></div><div class="hero-proof"><span class="avatar-stack"><i>MC</i><i>NW</i><i>AP</i></span><p><strong>${Math.max(8, view.navItems.length * 4)} teammates</strong><br />working securely today</p></div></div>`,
+    `<div class="hero-visual reveal" aria-label="${escapeHtml(view.primaryLabel)} performance overview"><div class="visual-top"><div><span>${visualTitle}</span><strong>${visualSubtitle}</strong></div><button type="button">•••</button></div><div class="visual-value"><strong>${visualValue}</strong><span>${visualDelta}</span></div><div class="chart" aria-hidden="true">${barsHtml}</div><div class="visual-axis"><span>Week 1</span><span>Week 10</span></div></div>`,
     "</section>",
     `<section class="metric-grid" aria-label="Workspace metrics">${metricsHtml}</section>`,
     '<section id="workspace" class="workspace-layout">',

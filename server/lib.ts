@@ -40,10 +40,31 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Path segments that must never appear in a generated project path.
+ * These protect against escaping the workspace (`..`), leaking secrets
+ * (`.env`, `.env.*`), and exposing control-plane/dependency artifacts
+ * (`.git`, `node_modules`). Matching is segment-based so legitimate files
+ * such as `.gitignore` or `environment.ts` are still allowed.
+ */
+function isForbiddenSegment(segment: string): boolean {
+  return (
+    segment === ".git" ||
+    segment === "node_modules" ||
+    segment === ".env" ||
+    segment.startsWith(".env.")
+  );
+}
+
 export function safePath(path: string): string {
+  if (typeof path !== "string") throw new ApiError(400, "UNSAFE_PATH", "Generated path must be a string.");
   const normalized = path.replaceAll("\\", "/").replace(/^\/+/, "");
   if (!normalized || normalized.includes("..") || normalized.includes("\0")) {
     throw new ApiError(400, "UNSAFE_PATH", `Unsafe generated path: ${path}`);
+  }
+  const segments = normalized.split("/");
+  if (segments.some(isForbiddenSegment)) {
+    throw new ApiError(400, "UNSAFE_PATH", `Generated path targets a protected location: ${path}`);
   }
   return normalized;
 }

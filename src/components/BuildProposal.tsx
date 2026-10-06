@@ -1,5 +1,6 @@
-import { ArrowRight, Boxes, Check, Code2, Database, ExternalLink, FileCode2, Server, ShieldCheck } from "lucide-react";
+import { ArrowRight, Boxes, Check, Code2, Database, ExternalLink, FileCode2, PencilLine, Server, ShieldCheck } from "lucide-react";
 import { motion } from "motion/react";
+import { useState } from "react";
 import type { BuildResponse } from "../lib/forgeweb-api";
 import ProjectWorkspace from "./ProjectWorkspace";
 
@@ -7,16 +8,26 @@ type BuildProposalProps = {
   build: BuildResponse | null;
   busy: boolean;
   onConfirm: () => void;
+  onRevise?: (notes: string) => void;
   onProjectUpdated?: () => void;
 };
 
-export default function BuildProposal({ build, busy, onConfirm, onProjectUpdated }: BuildProposalProps) {
+export default function BuildProposal({ build, busy, onConfirm, onRevise, onProjectUpdated }: BuildProposalProps) {
   const specification = build?.specification;
+  const [reviseOpen, setReviseOpen] = useState(false);
+  const [reviseNotes, setReviseNotes] = useState("");
   if (!build || !specification || build.status === "queued" || build.status === "specifying" || build.status === "planning") return null;
 
   const architecture = specification.architecture;
   const awaiting = build.status === "awaiting_confirmation";
   const complete = build.status === "completed";
+
+  const submitRevision = () => {
+    if (!onRevise || reviseNotes.trim().length < 12 || busy) return;
+    onRevise(reviseNotes.trim());
+    setReviseOpen(false);
+    setReviseNotes("");
+  };
 
   return (
     <motion.section
@@ -82,18 +93,41 @@ export default function BuildProposal({ build, busy, onConfirm, onProjectUpdated
 
       {awaiting && (
         <div className="build-confirmation-gate">
-          <div><strong>Ready for your decision</strong><p>Confirming freezes this specification, then starts frontend and backend generation.</p></div>
-          <button type="button" className="button button-acid" onClick={onConfirm} disabled={busy}>
-            {busy ? "Starting build…" : "Confirm requirements & generate"}<ArrowRight />
-          </button>
+          <div>
+            <strong>Ready for your decision</strong>
+            <p>Confirming freezes this specification, then starts frontend and backend generation.</p>
+          </div>
+          <div className="build-confirmation-actions">
+            {onRevise && (
+              <button type="button" className="button workspace-button" onClick={() => setReviseOpen((value) => !value)} disabled={busy}>
+                <PencilLine /> Revise
+              </button>
+            )}
+            <button type="button" className="button button-acid" onClick={onConfirm} disabled={busy}>
+              {busy ? "Starting build…" : "Confirm requirements & generate"}<ArrowRight />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {awaiting && reviseOpen && (
+        <div className="build-revise-panel">
+          <label htmlFor="revise-notes">What should be changed in the specification?</label>
+          <textarea id="revise-notes" value={reviseNotes} onChange={(event) => setReviseNotes(event.target.value)} rows={3} placeholder="Add a public storefront page, remove the admin role, change the database to SQLite…" />
+          <div className="build-revise-actions">
+            <button type="button" className="button workspace-button" onClick={() => setReviseOpen(false)}>Cancel</button>
+            <button type="button" className="button button-acid" disabled={busy || reviseNotes.trim().length < 12} onClick={submitRevision}>
+              <PencilLine /> {busy ? "Revising…" : "Submit revision"}
+            </button>
+          </div>
         </div>
       )}
 
       {build.filePaths.length > 0 && (
         <div className="generated-artifacts">
           <div className="build-proposal-title"><Code2 /> Generated frontend + backend <span>{build.filePaths.length} files</span></div>
-          <ProjectWorkspace projectId={build.projectId} initialFilePaths={build.filePaths} validationCount={build.validationChecks.length} onProjectUpdated={onProjectUpdated} />
-          {complete && <p><Check /> {build.validationChecks.length} validation checks passed. Requirement graph synchronized.</p>}
+          <ProjectWorkspace projectId={build.projectId} initialFilePaths={build.filePaths} validationCount={build.validationChecks.filter((check) => check.status === "passed").length} onProjectUpdated={onProjectUpdated} />
+          {complete && <p><Check /> {build.validationChecks.filter((check) => check.status === "passed").length} validation checks passed{build.validationChecks.some((check) => check.status === "skipped") ? `, ${build.validationChecks.filter((check) => check.status === "skipped").length} skipped` : ""}. Requirement graph synchronized.</p>}
         </div>
       )}
     </motion.section>

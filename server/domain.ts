@@ -1,3 +1,6 @@
+import type { PlanRecord } from "./generation/approval.ts";
+import type { LayoutMetadata } from "./generation/layout.ts";
+
 export type BuildStatus =
   | "queued"
   | "specifying"
@@ -94,9 +97,18 @@ export type GeneratedFile = {
   digest: string;
 };
 
+export type LlmGenerationMetadata = {
+  provider: string;
+  model: string;
+  tokensUsed: { prompt: number; completion: number };
+  durationMs: number;
+  fallbackUsed: boolean;
+};
+
 export type VersionValidationStatus = "pending" | "passed" | "failed";
 
 export type ProjectVersion = {
+  layout?: LayoutMetadata;
   id: string;
   projectId: string;
   buildId: string;
@@ -108,6 +120,7 @@ export type ProjectVersion = {
   restoredFromVersionId?: string;
   validationStatus: VersionValidationStatus;
   validationChecks: ValidationCheck[];
+  llmMetadata?: LlmGenerationMetadata;
   createdAt: string;
 };
 
@@ -141,8 +154,15 @@ export type ReviewFinding = {
 export type ValidationCheck = {
   id: string;
   name: string;
-  status: "passed" | "failed";
+  status: "passed" | "failed" | "skipped";
   evidence: string;
+  /**
+   * Generated files this check actually inspected. Used to derive
+   * requirement-level `VALIDATED_BY` edges in the traceability graph, so a
+   * requirement is only reported as validated by checks that examined the
+   * files implementing it. Absent when a check inspects no specific file.
+   */
+  subjectPaths?: string[];
 };
 
 export type GraphNode = {
@@ -196,6 +216,7 @@ export type BuildEvent = {
 };
 
 export type Build = {
+  planningRecordId?: string;
   id: string;
   projectId: string;
   specificationId?: string;
@@ -208,6 +229,7 @@ export type Build = {
   reviewFindings: ReviewFinding[];
   validationChecks: ValidationCheck[];
   graphSnapshotId?: string;
+  llmMetadata?: LlmGenerationMetadata;
   error?: { code: string; message: string };
   createdAt: string;
   updatedAt: string;
@@ -216,6 +238,7 @@ export type Build = {
 };
 
 export type ForgeDatabase = {
+  planningRecords?: Record<string, PlanRecord>;
   schemaVersion: 2;
   projects: Record<string, Project>;
   specifications: Record<string, MasterSpecification>;

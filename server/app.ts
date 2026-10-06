@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import { URL } from "node:url";
 import { ApiError } from "./lib.ts";
 import { BuildWorkflow } from "./workflow.ts";
+import { getLlmStatus } from "./llm/index.ts";
 
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -91,8 +92,21 @@ export function createForgeWebRequestHandler(workflow: BuildWorkflow): ForgeWebR
     const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
     const method = request.method ?? "GET";
     try {
+      if (method === "GET" && (requestUrl.pathname === "/" || requestUrl.pathname === "/api")) {
+        send(response, 200, {
+          service: "forgeweb-control-plane",
+          message: "API is running. Open the frontend at http://127.0.0.1:5175/.",
+          endpoints: ["/api/health", "/api/llm/status", "/api/projects", "/api/builds"],
+        });
+        return;
+      }
       if (method === "GET" && requestUrl.pathname === "/api/health") {
         send(response, 200, { status: "ok", service: "forgeweb-control-plane", time: new Date().toISOString() });
+        return;
+      }
+      if (method === "GET" && requestUrl.pathname === "/api/llm/status") {
+        const status = await getLlmStatus();
+        send(response, 200, { llm: status });
         return;
       }
       if (method === "GET" && requestUrl.pathname === "/api/projects") {
@@ -113,6 +127,13 @@ export function createForgeWebRequestHandler(workflow: BuildWorkflow): ForgeWebR
       const buildConfirmationMatch = requestUrl.pathname.match(/^\/api\/builds\/([^/]+)\/confirm$/);
       if (method === "POST" && buildConfirmationMatch) {
         const build = await workflow.confirm(decodeURIComponent(buildConfirmationMatch[1]));
+        send(response, 202, { build });
+        return;
+      }
+      const buildReviseMatch = requestUrl.pathname.match(/^\/api\/builds\/([^/]+)\/revise$/);
+      if (method === "POST" && buildReviseMatch) {
+        const payload = await body(request) as { prompt?: unknown };
+        const build = await workflow.revise(decodeURIComponent(buildReviseMatch[1]), payload.prompt);
         send(response, 202, { build });
         return;
       }

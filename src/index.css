@@ -659,6 +659,50 @@ button:disabled {
 .build-confirmation-gate .button { flex: none; }
 .build-confirmation-gate .button svg { width: 1rem; }
 
+.build-confirmation-actions {
+  display: flex;
+  gap: 0.55rem;
+  flex: none;
+}
+
+.build-revise-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: clamp(1rem, 2.5vw, 1.75rem);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.build-revise-panel label {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.build-revise-panel textarea {
+  width: 100%;
+  min-height: 4rem;
+  resize: vertical;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.65rem;
+  padding: 0.75rem;
+  color: white;
+  background: rgba(255, 255, 255, 0.03);
+  font: 0.75rem/1.55 inherit;
+}
+
+.build-revise-panel textarea:focus {
+  outline: 0;
+  border-color: rgba(223, 255, 104, 0.4);
+}
+
+.build-revise-actions {
+  display: flex;
+  gap: 0.55rem;
+  justify-content: flex-end;
+}
+
 .generated-artifacts > div:nth-child(2) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -776,7 +820,44 @@ button:disabled {
   background: rgba(255, 255, 255, 0.025);
   font-size: 0.63rem;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 120ms ease;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.workspace-files code:hover {
+  border-color: rgba(223, 255, 104, 0.3);
+}
+
+.workspace-files code.is-open {
+  border-color: rgba(223, 255, 104, 0.5);
+  background: rgba(223, 255, 104, 0.05);
+  color: white;
+}
+
+.file-reqs {
+  flex: none;
+  color: rgba(223, 255, 104, 0.55);
+  font-size: 0.52rem;
+  font-weight: 600;
+}
+
+.file-viewer {
+  grid-column: 1 / -1;
+  max-height: 32rem;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  color: rgba(255, 255, 255, 0.72);
+  background: #070909;
+  font: 0.62rem/1.7 "SFMono-Regular", "Cascadia Code", monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .workspace-muted {
@@ -1941,6 +2022,10 @@ button:disabled {
   .build-proposal-heading,
   .build-confirmation-gate {
     align-items: stretch;
+    flex-direction: column;
+  }
+
+  .build-confirmation-actions {
     flex-direction: column;
   }
 

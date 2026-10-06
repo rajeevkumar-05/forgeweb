@@ -11,7 +11,8 @@
     "start:api": "node dist-server/index.js",
     "preview": "vite preview --host 127.0.0.1",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.server.json --pretty false",
-    "test": "node --experimental-strip-types --test server/tests/*.test.ts"
+    "test": "node --experimental-strip-types --test server/tests/*.test.ts",
+    "test:e2e": "node scripts/api-e2e.mjs"
   },
   "dependencies": {
     "animejs": "^4.5.0",

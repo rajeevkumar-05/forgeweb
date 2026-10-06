@@ -50,6 +50,7 @@ export default function ProjectWorkspace({ projectId, initialFilePaths, validati
   const [workspaceError, setWorkspaceError] = useState("");
   const [loading, setLoading] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
+  const [openFile, setOpenFile] = useState("");
   const [editPrompt, setEditPrompt] = useState("");
   const [editBusy, setEditBusy] = useState(false);
   const [editError, setEditError] = useState("");
@@ -187,7 +188,16 @@ export default function ProjectWorkspace({ projectId, initialFilePaths, validati
 
       {tab === "files" && (
         <div className="workspace-files" role="tabpanel">
-          {files.map((path) => <code key={path}>{path}</code>)}
+          {(workspace?.files ?? []).map((file) => (
+            <code key={file.path} className={openFile === file.path ? "is-open" : ""} onClick={() => setOpenFile(openFile === file.path ? "" : file.path)} role="button" tabIndex={0}>
+              {file.path}
+              {file.requirementIds.length > 0 && <span className="file-reqs">{file.requirementIds.join(", ")}</span>}
+            </code>
+          ))}
+          {openFile && workspace?.files.find((file) => file.path === openFile) && (
+            <pre className="file-viewer">{workspace.files.find((file) => file.path === openFile)!.content}</pre>
+          )}
+          {!workspace && files.map((path) => <code key={path}>{path}</code>)}
           {loading && <p className="workspace-muted"><LoaderCircle className="animate-spin" /> Loading stored project source…</p>}
         </div>
       )}

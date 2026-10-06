@@ -8,9 +8,20 @@ import type {
   ValidationCheck,
 } from "./domain.ts";
 import { buildGeneratedFrontend, GENERATED_FRONTEND_TEMPLATE, normalizeMasterSpecification } from "./generated-frontend.ts";
+import { buildGeneratedBackend } from "./generated-backend.ts";
 import { ApiError, assertPrompt, digest, id, now, safePath, slugify } from "./lib.ts";
+import { getLlmConfig, getLlmProvider } from "./llm/index.ts";
+import { buildEditPrompt } from "./llm/prompts.ts";
+import { parseEditResponse } from "./llm/parser.ts";
 import { JsonStore } from "./store.ts";
 import { createProjectZip } from "./zip.ts";
+import { layoutCompatibility } from "./generation/layout.ts";
+import { planRecordDigest } from "./generation/approval.ts";
+
+function requireManagedLayout(workspace: ProjectWorkspace): void {
+  if (!workspace.files.length && !workspace.currentVersion) return;
+  if (layoutCompatibility(workspace.files, workspace.currentVersion?.layout) !== "managed") throw new ApiError(409, "LAYOUT_UNSUPPORTED", "This layout requires an intentional compatibility workflow.");
+}
 
 type EditScope = "frontend" | "backend" | "database" | "fullstack";
 
@@ -105,12 +116,11 @@ function professionalizeFrontend(sourceFiles: GeneratedFile[], specification: Ma
   setFile("frontend/preview.html", frontend.preview, ["REQ-003", "REQ-006"]);
   setFile("frontend/src/main.tsx", 'import { StrictMode } from "react";\nimport { createRoot } from "react-dom/client";\nimport App from "./App.js";\n\ncreateRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);\n', ["REQ-006"]);
 
-  const entities = specification.entities.map((entity) => JSON.stringify(entity)).join(" | ");
-  const roles = specification.roles.map((role) => JSON.stringify(role)).join(" | ");
-  moveLegacyFile("src/domain/model.ts", "backend/src/domain/model.ts", `export type DomainEntity = ${entities};\nexport type Role = ${roles};\nexport type DomainRecord = { id: string; entity: DomainEntity; ownerId: string; archivedAt?: string; createdAt: string; updatedAt: string };\n`, ["REQ-003", "REQ-004"]);
-  moveLegacyFile("src/security/access-control.ts", "backend/src/security/access-control.ts", 'import type { DomainRecord, Role } from "../domain/model.js";\nexport function canAccess(role: Role, userId: string, record: DomainRecord): boolean { return role === "Owner" || (record.ownerId === userId && !record.archivedAt); }\n', ["REQ-001", "REQ-002", "REQ-004"]);
-  moveLegacyFile("src/api/contracts.ts", "backend/src/api/contracts.ts", 'import type { DomainEntity } from "../domain/model.js";\nexport type CreateRecordInput = { entity: DomainEntity; values: Record<string, unknown> };\nexport type AuditEnvelope<T> = { requirementId: string; actorId: string; payload: T };\n', ["REQ-003", "REQ-004", "REQ-005"]);
-  setFile("backend/src/index.ts", `export const service = { name: ${JSON.stringify(specification.productName)}, status: "ready", apiVersion: "v1" } as const;\n`, ["REQ-001", "REQ-002", "REQ-003"]);
+  const backend = buildGeneratedBackend(specification);
+  moveLegacyFile("src/domain/model.ts", "backend/src/domain/model.ts", backend.model, ["REQ-003", "REQ-004"]);
+  moveLegacyFile("src/security/access-control.ts", "backend/src/security/access-control.ts", backend.accessControl, ["REQ-001", "REQ-002", "REQ-004"]);
+  moveLegacyFile("src/api/contracts.ts", "backend/src/api/contracts.ts", backend.contracts, ["REQ-003", "REQ-004", "REQ-005"]);
+  setFile("backend/src/index.ts", backend.index, ["REQ-001", "REQ-002", "REQ-003"]);
 
   const architecture = specification.architecture?.markdown ?? [
     `# ${specification.productName} Architecture`,
@@ -147,9 +157,11 @@ function professionalizeFrontend(sourceFiles: GeneratedFile[], specification: Ma
 function hasProfessionalFrontend(files: GeneratedFile[]): boolean {
   const paths = new Set(files.map((file) => file.path));
   const requiredPaths = ["ARCHITECTURE.md", "frontend/src/App.tsx", "frontend/src/styles.css", "frontend/src/main.tsx", "frontend/preview.html", "backend/src/index.ts", "backend/src/domain/model.ts", "backend/src/security/access-control.ts", "backend/src/api/contracts.ts"];
+  const preview = files.find((file) => file.path === "frontend/preview.html")?.content ?? "";
+  const app = files.find((file) => file.path === "frontend/src/App.tsx")?.content ?? "";
   return requiredPaths.every((path) => paths.has(path))
-    && files.find((file) => file.path === "frontend/preview.html")?.content.includes(GENERATED_FRONTEND_TEMPLATE) === true
-    && files.find((file) => file.path === "frontend/src/App.tsx")?.content.includes(GENERATED_FRONTEND_TEMPLATE) === true;
+    && (preview.includes(GENERATED_FRONTEND_TEMPLATE) || (preview.includes("<!doctype html>") && preview.includes('aria-label="Primary navigation"')))
+    && (app.includes(GENERATED_FRONTEND_TEMPLATE) || app.includes("export default function App"));
 }
 
 function cssEdit(prompt: string): string {
@@ -201,6 +213,87 @@ function applyScopedEdit(sourceFiles: GeneratedFile[], prompt: string): { files:
   return { files, modifiedFiles: [...modified] };
 }
 
+/**
+ * AI-powered scoped edit. Asks the configured LLM to rewrite whole files in
+ * response to an edit request, then merges the result into the current project
+ * under strict guardrails:
+ *
+ *   - Only paths inside the generated project scope (frontend/, backend/, tests/,
+ *     README.md, ARCHITECTURE.md, package.json) are accepted; anything else is
+ *     dropped. Paths were already normalized through safePath() by the parser.
+ *   - The sandbox preview (frontend/preview.html) is ForgeWeb-controlled and is
+ *     never AI-authored, so any model attempt to rewrite it is ignored.
+ *   - Requirement traceability is preserved: existing files keep their mapping if
+ *     the model omits one; new files inherit a requirement id.
+ *
+ * Returns null when the provider is disabled, unavailable, produces unparseable
+ * output, or changes nothing — signaling the caller to fall back to the
+ * deterministic scoped edit. Validation of the merged result is the caller's
+ * responsibility, so an invalid AI edit also degrades to the deterministic path.
+ */
+async function applyAiEdit(
+  sourceFiles: GeneratedFile[],
+  prompt: string,
+  specification: MasterSpecification,
+): Promise<{ files: GeneratedFile[]; modifiedFiles: string[] } | null> {
+  const config = getLlmConfig();
+  if (!config.enabled) return null;
+
+  let provider: ReturnType<typeof getLlmProvider>;
+  try {
+    provider = getLlmProvider();
+    if (!(await provider.isAvailable())) return null;
+  } catch {
+    return null;
+  }
+
+  try {
+    const { system, user } = buildEditPrompt(prompt, sourceFiles, specification);
+    const response = await provider.generate(user, { systemPrompt: system, temperature: 0.1, maxTokens: 8192 });
+    const parsed = parseEditResponse(response.content);
+    if (!parsed) return null;
+
+    const files = structuredClone(sourceFiles);
+    const byPath = new Map(files.map((file) => [file.path, file]));
+    const fallbackRequirement = specification.requirements[0]?.id;
+    const allowedRoots = ["frontend/", "backend/", "tests/"];
+    const allowedExact = new Set(["README.md", "ARCHITECTURE.md", "package.json"]);
+    const protectedPaths = new Set(["frontend/preview.html"]);
+    const modified = new Set<string>();
+
+    for (const change of parsed.modifiedFiles) {
+      const path = change.path;
+      // The preview is a ForgeWeb-owned, CSP-restricted isolated representation.
+      if (protectedPaths.has(path)) continue;
+      const inScope = allowedExact.has(path) || allowedRoots.some((root) => path.startsWith(root));
+      if (!inScope) continue;
+
+      const existing = byPath.get(path);
+      if (existing) {
+        if (existing.content === change.content) continue;
+        existing.content = change.content;
+        existing.digest = change.digest;
+        if (change.requirementIds.length > 0) existing.requirementIds = change.requirementIds;
+        modified.add(path);
+      } else {
+        const requirementIds = change.requirementIds.length > 0
+          ? change.requirementIds
+          : fallbackRequirement ? [fallbackRequirement] : [];
+        if (requirementIds.length === 0) continue; // never store an untraceable file
+        const created: GeneratedFile = { path, content: change.content, requirementIds, digest: change.digest };
+        files.push(created);
+        byPath.set(path, created);
+        modified.add(path);
+      }
+    }
+
+    if (modified.size === 0) return null;
+    return { files, modifiedFiles: [...modified].sort() };
+  } catch {
+    return null;
+  }
+}
+
 export class ProjectWorkspaceService {
   private readonly store: JsonStore;
   private readonly upgradeLocks = new Map<string, Promise<void>>();
@@ -237,6 +330,13 @@ export class ProjectWorkspaceService {
 
   private async performProfessionalFrontendUpgrade(projectId: string): Promise<void> {
     const workspace = this.get(projectId);
+    if (!workspace.files.length) return;
+    const compatibility = layoutCompatibility(workspace.files, workspace.currentVersion?.layout);
+    if (compatibility === "approved-generated") {
+      this.requireLayoutApproval(projectId, workspace.currentVersion!);
+      return;
+    }
+    requireManagedLayout(workspace);
     if (hasProfessionalFrontend(workspace.files) && workspace.specification?.architecture) return;
     if (!workspace.specification || workspace.files.length === 0 || !workspace.project.currentBuildId) return;
     const specification = normalizeMasterSpecification(workspace.specification);
@@ -246,6 +346,8 @@ export class ProjectWorkspaceService {
     await this.store.mutate((database) => {
       const project = database.projects[projectId];
       database.specifications[specification.id] = specification;
+      const activeFiles = project.currentVersionId ? database.versionFiles[project.currentVersionId] : database.files[project.currentBuildId!];
+      if (project.currentVersionId !== workspace.project.currentVersionId || digest(JSON.stringify(activeFiles)) !== digest(JSON.stringify(workspace.files))) throw new ApiError(409, "WORKSPACE_CHANGED", "Workspace changed during compatibility upgrade.");
       const versions = Object.values(database.versions).filter((version) => version.projectId === projectId);
       const versionNumber = Math.max(0, ...versions.map((version) => version.versionNumber)) + 1;
       const versionId = id("version");
@@ -278,6 +380,7 @@ export class ProjectWorkspaceService {
 
   async getPreview(projectId: string): Promise<{ html: string; versionId: string }> {
     const workspace = await this.getReady(projectId);
+    requireManagedLayout(workspace);
     const preview = workspace.files.find((file) => file.path === "frontend/preview.html");
     if (!preview || !workspace.currentVersion) throw new ApiError(422, "PREVIEW_UNAVAILABLE", "This project does not contain a renderable frontend preview.");
     return { html: preview.content, versionId: workspace.currentVersion.id };
@@ -286,12 +389,26 @@ export class ProjectWorkspaceService {
   async edit(projectId: string, promptValue: unknown): Promise<EditResult> {
     const prompt = assertPrompt(promptValue);
     const workspace = await this.getReady(projectId);
+    requireManagedLayout(workspace);
     if (!workspace.currentVersion) throw new ApiError(409, "PROJECT_NOT_GENERATED", "Generate the project before applying an edit.");
     await this.store.mutate((database) => {
       database.projects[projectId].status = "editing";
       database.projects[projectId].updatedAt = now();
     });
-    const candidate = applyScopedEdit(workspace.files, prompt);
+    // Prefer an AI-powered edit when a provider is configured and reachable.
+    // Fall back to the deterministic scoped edit if the model is unavailable,
+    // returns unparseable output, changes nothing, or produces a project that
+    // fails validation — the deterministic path is always a safe backstop.
+    const specification = workspace.specification ? normalizeMasterSpecification(workspace.specification) : undefined;
+    let candidate: { files: GeneratedFile[]; modifiedFiles: string[] } | null = null;
+    if (specification) {
+      const aiCandidate = await applyAiEdit(workspace.files, prompt, specification);
+      if (aiCandidate && aiCandidate.modifiedFiles.length > 0) {
+        const aiChecks = validateStoredProject(aiCandidate.files);
+        if (!aiChecks.some((check) => check.status === "failed")) candidate = aiCandidate;
+      }
+    }
+    if (!candidate) candidate = applyScopedEdit(workspace.files, prompt);
     if (candidate.modifiedFiles.length === 0) throw new ApiError(422, "NO_SAFE_EDIT", "No safe project files matched this edit request.");
     const checks = validateStoredProject(candidate.files);
     if (checks.some((check) => check.status === "failed")) {
@@ -337,6 +454,8 @@ export class ProjectWorkspaceService {
     const workspace = await this.getReady(projectId);
     const version = workspace.versions.find((candidate) => candidate.id === versionId);
     if (!version || version.validationStatus !== "passed") throw new ApiError(404, "VERSION_NOT_RESTORABLE", "The selected validated version was not found.");
+    if (layoutCompatibility(this.store.read().versionFiles[versionId] ?? [], version.layout) === "unsupported") throw new ApiError(409, "LAYOUT_UNSUPPORTED", "Cannot restore an unfamiliar layout automatically.");
+    if (version.layout) this.requireLayoutApproval(projectId, version);
     await this.store.mutate((database) => {
       const project = database.projects[projectId];
       project.currentVersionId = version.id;
@@ -347,11 +466,17 @@ export class ProjectWorkspaceService {
     return this.get(projectId);
   }
 
+  private requireLayoutApproval(projectId: string, version: ProjectVersion): void {
+    const plan = this.store.read().planningRecords?.[version.layout!.approvedPlanId];
+    if (!plan || plan.proposal.scope.projectId !== projectId || plan.digest !== planRecordDigest(plan) || plan.approval?.planDigest !== plan.digest) throw new ApiError(409, "LAYOUT_UNSUPPORTED", "Generated layout has no matching durable approval.");
+  }
+
   async validateExport(projectId: string): Promise<ExportSummary> {
     const workspace = await this.getReady(projectId);
+    requireManagedLayout(workspace);
     if (!workspace.currentVersion) throw new ApiError(409, "PROJECT_NOT_GENERATED", "Generate the project before exporting it.");
     const checks = validateStoredProject(workspace.files);
-    const passed = checks.every((check) => check.status === "passed");
+    const passed = !checks.some((check) => check.status === "failed");
     await this.store.mutate((database) => {
       const project = database.projects[projectId];
       project.status = passed ? "ready_to_export" : "validation_failed";

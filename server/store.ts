@@ -4,6 +4,7 @@ import type { ForgeDatabase } from "./domain.ts";
 
 const emptyDatabase = (): ForgeDatabase => ({
   schemaVersion: 2,
+  planningRecords: {},
   projects: {},
   specifications: {},
   builds: {},
@@ -35,13 +36,14 @@ export class JsonStore {
         ...parsed,
         schemaVersion: 2,
         versions: parsed.versions ?? {},
+        planningRecords: parsed.planningRecords ?? {},
         versionFiles: parsed.versionFiles ?? {},
       };
-      if (schemaVersion === 1) await this.persist();
+      if (schemaVersion === 1) await this.persist(this.database);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       this.database = emptyDatabase();
-      await this.persist();
+      await this.persist(this.database);
     }
   }
 
@@ -58,8 +60,8 @@ export class JsonStore {
       const working = structuredClone(this.database);
       try {
         result = await mutation(working);
+        await this.persist(working);
         this.database = working;
-        await this.persist();
       } catch (error) {
         failure = error;
       }
@@ -69,10 +71,9 @@ export class JsonStore {
     return result;
   }
 
-  private async persist(): Promise<void> {
-    if (!this.database) return;
+  private async persist(database: ForgeDatabase): Promise<void> {
     const temporary = `${this.filePath}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(this.database, null, 2)}\n`, "utf8");
+    await writeFile(temporary, `${JSON.stringify(database, null, 2)}\n`, "utf8");
     await rename(temporary, this.filePath);
   }
 }

@@ -19,7 +19,7 @@ import {
   Workflow,
   Zap,
 } from "lucide-react";
-import { lazy, Suspense, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { gsap } from "gsap";
 import BorderGlow from "./components/react-bits/BorderGlow";
@@ -30,7 +30,7 @@ import { LanguageShowcase } from "./components/LanguageShowcase";
 import SiteNav from "./components/SiteNav";
 import BuildProposal from "./components/BuildProposal";
 import ProjectLibrary from "./components/ProjectLibrary";
-import { confirmBuild, createBuild, waitForBuild, type BuildResponse } from "./lib/forgeweb-api";
+import { confirmBuild, createBuild, getLlmStatus, reviseBuild, waitForBuild, type BuildResponse, type LlmStatus } from "./lib/forgeweb-api";
 
 const floatingLinesGradient = ["#50c7f0", "#000000", "#0ac0e0"];
 const FloatingLines = lazy(() => import("./components/react-bits/FloatingLines"));
@@ -88,8 +88,18 @@ function Hero() {
   const [build, setBuild] = useState<BuildResponse | null>(null);
   const [projectRefreshToken, setProjectRefreshToken] = useState(0);
   const [statusDetail, setStatusDetail] = useState("Ready — your prompt becomes a versioned specification before code is generated.");
+  const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
   const activeStage = buildStages[Math.max(stage, 0)];
   const ActiveStageIcon = activeStage.icon;
+
+  useEffect(() => {
+    getLlmStatus().then((status) => {
+      console.log("[ForgeWeb] LLM status:", JSON.stringify(status));
+      setLlmStatus(status);
+    }).catch((err) => {
+      console.error("[ForgeWeb] LLM status fetch failed:", err);
+    });
+  }, []);
 
   const launchDemo = async (event: FormEvent) => {
     event.preventDefault();
@@ -152,6 +162,37 @@ function Hero() {
     }
   };
 
+  const reviseProposal = async (notes: string) => {
+    if (!build || running || build.status !== "awaiting_confirmation") return;
+    setRunning(true);
+    setStage(-1);
+    setStatusDetail("Master spec — revising the specification from your feedback…");
+    try {
+      const revised = await reviseBuild(build.id, notes);
+      const completed = await waitForBuild(revised.id, (progress) => {
+        setBuild(progress);
+        setStage(visibleBuildStage(progress));
+        setStatusDetail(visibleBuildDetail(progress));
+      });
+      if (completed.status === "failed" || completed.status === "needs_context") {
+        throw new Error(completed.error?.message ?? completed.stageDetail);
+      }
+      setBuild(completed);
+      if (completed.status === "awaiting_confirmation") {
+        setStage(1);
+        setStatusDetail("Architecture ready — review the revised requirements and confirm before any source is generated.");
+      } else {
+        setStage(3);
+        setStatusDetail(completed.stageDetail);
+      }
+    } catch (error) {
+      setStage(-1);
+      setStatusDetail(error instanceof Error ? `Revision failed — ${error.message}` : "Revision failed unexpectedly.");
+    } finally {
+      setRunning(false);
+    }
+  };
+
   const openSavedProject = (savedBuild: BuildResponse) => {
     setBuild(savedBuild);
     setStage(visibleBuildStage(savedBuild));
@@ -183,6 +224,19 @@ function Hero() {
           >
             <Sparkles className="size-3.5 text-acid" />
             Intelligence you can inspect
+            {llmStatus && (
+              <span
+                className={`ml-2 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                  llmStatus.mode === "ai-powered"
+                    ? "bg-emerald-500/20 text-emerald-400"
+                    : "bg-amber-500/20 text-amber-400"
+                }`}
+                title={llmStatus.mode === "ai-powered" ? `${llmStatus.provider} · ${llmStatus.model}` : "LLM not connected — using built-in templates"}
+              >
+                <span className={`inline-block size-1.5 rounded-full ${llmStatus.mode === "ai-powered" ? "bg-emerald-400" : "bg-amber-400"}`} />
+                {llmStatus.mode === "ai-powered" ? "AI" : "Templates"}
+              </span>
+            )}
           </motion.div>
           <h1 className="sr-only">ForgeWeb secure full-stack application builder</h1>
           <KineticStatement />
@@ -256,7 +310,7 @@ function Hero() {
             <span className="flex items-center gap-1.5"><KeyRound className="size-3.5" /> Managed or BYOK</span>
           </div>
           <ProjectLibrary activeProjectId={build?.projectId} refreshToken={projectRefreshToken} onOpen={openSavedProject} />
-          <BuildProposal build={build} busy={running} onConfirm={confirmProposal} onProjectUpdated={() => setProjectRefreshToken((value) => value + 1)} />
+          <BuildProposal build={build} busy={running} onConfirm={confirmProposal} onRevise={reviseProposal} onProjectUpdated={() => setProjectRefreshToken((value) => value + 1)} />
         </div>
       </div>
       <div className="hero-scroll-cue"><span>SCROLL TO TRACE THE SYSTEM</span><i /></div>

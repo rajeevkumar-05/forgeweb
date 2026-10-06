@@ -10,6 +10,7 @@ import type {
   GraphEdge,
   GraphNode,
   GraphSnapshot,
+  LlmGenerationMetadata,
   MasterSpecification,
   Project,
   Requirement,
@@ -17,10 +18,15 @@ import type {
   ValidationCheck,
 } from "./domain.ts";
 import { ApiError, assertPrompt, delay, digest, id, now, safePath, slugify } from "./lib.ts";
+import { canTransition, setBuildStatus } from "./build-state.ts";
 import { buildGeneratedFrontend, GENERATED_FRONTEND_TEMPLATE } from "./generated-frontend.ts";
+import { buildGeneratedBackend } from "./generated-backend.ts";
 import { AGENT_POLICY, createTasks, enforceImplementationTask } from "./policy.ts";
 import { ProjectWorkspaceService } from "./project-workspace.ts";
 import { JsonStore } from "./store.ts";
+import { createFallbackMetadata, getLlmConfig, getLlmProvider } from "./llm/index.ts";
+import { buildSpecificationPrompt, buildFrontendPrompt, buildBackendPrompt, buildReviewPrompt } from "./llm/prompts.ts";
+import { parseSpecificationResponse, parseFileGenerationResponse, parseReviewResponse } from "./llm/parser.ts";
 
 const stageIndexes: Record<Exclude<BuildStatus, "queued" | "awaiting_confirmation" | "failed" | "needs_context">, number> = {
   specifying: 0,
@@ -32,20 +38,50 @@ const stageIndexes: Record<Exclude<BuildStatus, "queued" | "awaiting_confirmatio
 };
 
 const entityKeywords: Array<[RegExp, string]> = [
-  [/projects?/i, "Project"],
-  [/invoices?|billing/i, "Invoice"],
-  [/files?|documents?/i, "FileAsset"],
-  [/inventory|stock/i, "InventoryItem"],
-  [/teams?|staff/i, "TeamMember"],
-  [/schedul|calendar/i, "ScheduleEntry"],
+  [/projects?|portfolio/i, "Project"],
+  [/skills?|tech\s?stack/i, "Skill"],
+  [/invoices?|billing|payment/i, "Invoice"],
+  [/files?|documents?|assets?/i, "FileAsset"],
+  [/inventory|stock|products?|items?/i, "Product"],
+  [/orders?|checkout|cart/i, "Order"],
+  [/teams?|staff|employees?|members?/i, "TeamMember"],
+  [/schedul|calendar|booking|appointments?/i, "Appointment"],
   [/clients?|customers?/i, "Client"],
+  [/students?|school|education/i, "Student"],
+  [/courses?|lessons?|classes?/i, "Course"],
+  [/articles?|posts?|blogs?/i, "Article"],
+  [/comments?|reviews?|feedback/i, "Review"],
+  [/tasks?|todos?|issues?/i, "Task"],
+  [/patients?|clinic|health|medical/i, "Patient"],
+  [/events?|tickets?|venues?/i, "Event"],
+  [/messages?|chats?|conversations?/i, "Message"],
+  [/transactions?|expenses?|budget/i, "Transaction"],
+  [/games?|scores?|leaderboard/i, "ScoreEntry"],
 ];
 
+/**
+ * Derive a product name from a conversational prompt.
+ *
+ * The name is a noun phrase, so everything after a feature list ("with ...") or
+ * a subordinate clause ("where users can ...") is dropped before the phrase is
+ * cut at the first punctuation. Without the clause strip, a prompt such as
+ * "…application where users can create, edit, complete, and delete tasks"
+ * yields the fragment "Application Where Users Can Create", which then
+ * propagates into the summary, README, preview, and ARCHITECTURE.md title.
+ */
 function productName(prompt: string): string {
-  const match = prompt.match(/(?:build|create|make)\s+(?:an?\s+)?(?:secure\s+)?([^,.]{3,48})/i);
-  const candidate = match?.[1]?.replace(/\s+(?:with|for)\s+.*$/i, "").trim();
-  if (!candidate) return "ForgeWeb Application";
-  return candidate.replace(/\b\w/g, (character) => character.toUpperCase());
+  const cleaned = prompt.replace(/^(?:please\s+)?(?:build|create|make|generate|design)\s+(?:an?\s+)?(?:secure\s+)?/i, "").trim();
+  const candidate = cleaned
+    .replace(/\s+(?:with|for|featuring|including)\s+.*$/i, "")
+    .replace(/\s+(?:where|which|that|who|whose|when|while|so\s+that|in\s+which|allowing|letting|enabling|used\s+by)\b.*$/i, "")
+    .split(/[.,;:\n]/)[0]
+    ?.trim()
+    .replace(/\s+(?:and|or|of|the|a|an|to|for|with|by|in|on|from)$/i, "")
+    .trim();
+  if (candidate && candidate.length >= 2 && candidate.length <= 60) {
+    return candidate.replace(/\b\w/g, (character) => character.toUpperCase());
+  }
+  return "ForgeWeb Application";
 }
 
 const buildCapabilities: BuildCapability[] = [
@@ -124,6 +160,18 @@ function createArchitecture(
     "  Tests[Acceptance and security checks] --> API",
     "  Git[Git revision] --> Graph[Requirement and code graph]",
   ].join("\n");
+  const database = "PostgreSQL";
+  const dataRules = [
+    "Every mutable record has an owner or project boundary",
+    "Archive before destructive deletion",
+    "Migrations and audit events are versioned",
+  ];
+  const delivery = [
+    "Git-native revisions",
+    "Automated type, test, security, and accessibility checks",
+    "Requirement-to-code graph snapshot",
+    "Sanitized export",
+  ];
   const fence = String.fromCharCode(96).repeat(3);
   const markdown = [
     "# " + name + " Architecture",
@@ -154,12 +202,24 @@ function createArchitecture(
     ...entities.map((entity) => "- " + entity + " domain module"),
     "- Audit and evidence module",
     "",
+    "## Data model",
+    "",
+    "Database: " + database + ".",
+    "",
+    ...entities.map((entity) => "- " + entity + " table with owner, timestamps, and audit trail"),
+    "",
+    ...dataRules.map((rule) => "- " + rule),
+    "",
     "## Security",
     "",
     "- Authorization is enforced on the server, never inferred from hidden UI.",
     "- Input is validated at the API boundary.",
     "- Destructive operations require confirmation and audit evidence.",
     "- Secrets and external integrations remain isolated capability handles.",
+    "",
+    "## Delivery",
+    "",
+    ...delivery.map((item) => "- " + item),
     "",
     "## Diagram",
     "",
@@ -187,9 +247,9 @@ function createArchitecture(
       jobs: ["Long-running generation", "Notifications and integrations", "Evidence and graph synchronization"],
     },
     data: {
-      database: "PostgreSQL",
+      database,
       entities,
-      rules: ["Every mutable record has an owner or project boundary", "Archive before destructive deletion", "Migrations and audit events are versioned"],
+      rules: dataRules,
     },
     security: [
       "Secure session boundary",
@@ -198,14 +258,15 @@ function createArchitecture(
       "Secret isolation and redacted logs",
       "Explicit confirmation for consequential actions",
     ],
-    delivery: ["Git-native revisions", "Automated type, test, security, and accessibility checks", "Requirement-to-code graph snapshot", "Sanitized export"],
+    delivery,
     diagram,
     markdown,
     capabilities: buildCapabilities,
   };
 }
 
-function compileSpecification(projectId: string, prompt: string): MasterSpecification {
+/** Template-based specification (original implementation — used as fallback). */
+function compileSpecificationTemplate(projectId: string, prompt: string): MasterSpecification {
   const name = productName(prompt);
   const entities = ["User", ...entityKeywords.filter(([keyword]) => keyword.test(prompt)).map(([, entity]) => entity)];
   const uniqueEntities = [...new Set(entities)];
@@ -245,33 +306,103 @@ function compileSpecification(projectId: string, prompt: string): MasterSpecific
   };
 }
 
-function generateFiles(specification: MasterSpecification): GeneratedFile[] {
+/** LLM-powered specification with template fallback. */
+async function compileSpecification(projectId: string, prompt: string): Promise<{ specification: MasterSpecification; llmMetadata: LlmGenerationMetadata }> {
+  const config = getLlmConfig();
+
+  if (config.enabled) {
+    try {
+      const provider = getLlmProvider();
+      const available = await provider.isAvailable();
+
+      if (available) {
+        const { system, user } = buildSpecificationPrompt(prompt);
+        const response = await provider.generate(user, { systemPrompt: system, temperature: 0.2, maxTokens: 4096 });
+        const parsed = parseSpecificationResponse(response.content);
+
+        if (parsed) {
+          const name = parsed.productName || productName(prompt);
+          const uniqueEntities = [...new Set(parsed.entities)];
+          const requirements: Requirement[] = parsed.requirements.map((r, index) => ({
+            id: r.id || `REQ-${String(index + 1).padStart(3, "0")}`,
+            title: r.title,
+            description: r.description,
+            acceptanceCriteria: r.acceptanceCriteria,
+            priority: r.priority,
+          }));
+
+          const specification: MasterSpecification = {
+            id: id("spec"),
+            projectId,
+            version: 1,
+            status: "proposed",
+            prompt,
+            productName: name,
+            summary: parsed.summary || `A secure ${name.toLowerCase()} generated by AI.`,
+            roles: parsed.roles,
+            entities: uniqueEntities,
+            requirements,
+            assumptions: parsed.assumptions || [
+              "The first generated stack is TypeScript and uses server-side authorization.",
+            ],
+            architecture: createArchitecture(name, prompt, parsed.roles, uniqueEntities, requirements),
+            createdAt: now(),
+          };
+
+          return {
+            specification,
+            llmMetadata: {
+              provider: provider.name,
+              model: response.model,
+              tokensUsed: response.tokensUsed,
+              durationMs: response.durationMs,
+              fallbackUsed: false,
+            },
+          };
+        }
+        console.warn("[ForgeWeb LLM] Specification response could not be parsed, falling back to template.");
+      }
+    } catch (error) {
+      console.warn("[ForgeWeb LLM] Specification generation failed, falling back to template:", error instanceof Error ? error.message : error);
+    }
+  }
+
+  // Fallback to template-based specification
+  return {
+    specification: compileSpecificationTemplate(projectId, prompt),
+    llmMetadata: createFallbackMetadata(),
+  };
+}
+
+/** Template-based file generation (original implementation — used as fallback). */
+function generateFilesTemplate(specification: MasterSpecification): GeneratedFile[] {
   const requirementIds = specification.requirements.map((requirement) => requirement.id);
-  const entityUnion = specification.entities.map((entity) => JSON.stringify(entity)).join(" | ");
-  const roleUnion = specification.roles.map((role) => JSON.stringify(role)).join(" | ");
-  const productLiteral = JSON.stringify(specification.productName);
   const frontend = buildGeneratedFrontend(specification);
+  const backend = buildGeneratedBackend(specification);
   const packageJson = {
     name: slugify(specification.productName),
     private: true,
     version: "0.1.0",
     type: "module",
-    scripts: { dev: "vite", build: "tsc -b && vite build", test: "node --test" },
+    scripts: { dev: "vite --root frontend", build: "tsc -p frontend/tsconfig.json && tsc -p backend/tsconfig.json && vite build --root frontend", test: "node --test", "start:api": "node backend/dist/index.js" },
     dependencies: { animejs: "^4.5.0", gsap: "^3.15.0", react: "^19.2.0", "react-dom": "^19.2.0" },
-    devDependencies: { "@vitejs/plugin-react": "^6.0.0", typescript: "^7.0.0", vite: "^8.0.0" },
+    devDependencies: { "@types/node": "^24.0.0", "@types/react": "^19.0.0", "@types/react-dom": "^19.0.0", "@vitejs/plugin-react": "^6.0.0", typescript: "^7.0.0", vite: "^8.0.0" },
   };
   const templates = [
     { path: "README.md", requirements: requirementIds, content: "# " + specification.productName + "\n\n" + specification.summary + "\n\nGenerated only after confirmation of specification " + specification.id + ".\n" },
     { path: "ARCHITECTURE.md", requirements: requirementIds, content: specification.architecture.markdown },
     { path: "package.json", requirements: ["REQ-006"], content: JSON.stringify(packageJson, null, 2) + "\n" },
+    { path: "frontend/index.html", requirements: ["REQ-006"], content: '<!doctype html>\n<html lang="en">\n  <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>' + specification.productName + '</title></head>\n  <body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body>\n</html>\n' },
+    { path: "frontend/tsconfig.json", requirements: ["REQ-006"], content: '{\n  "compilerOptions": { "target": "ES2022", "useDefineForClassFields": true, "lib": ["ES2022", "DOM"], "allowJs": false, "skipLibCheck": true, "esModuleInterop": true, "allowSyntheticDefaultImports": true, "strict": true, "module": "ESNext", "moduleResolution": "bundler", "resolveJsonModule": true, "isolatedModules": true, "noEmit": true, "jsx": "react-jsx" },\n  "include": ["src"]\n}\n' },
     { path: "frontend/src/App.tsx", requirements: ["REQ-003", "REQ-006"], content: frontend.app },
     { path: "frontend/src/styles.css", requirements: ["REQ-006"], content: frontend.styles },
     { path: "frontend/src/main.tsx", requirements: ["REQ-006"], content: 'import { StrictMode } from "react";\nimport { createRoot } from "react-dom/client";\nimport App from "./App.js";\n\ncreateRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);\n' },
     { path: "frontend/preview.html", requirements: ["REQ-003", "REQ-006"], content: frontend.preview },
-    { path: "backend/src/domain/model.ts", requirements: ["REQ-003", "REQ-004"], content: "export type DomainEntity = " + entityUnion + ";\nexport type Role = " + roleUnion + ";\nexport type DomainRecord = { id: string; entity: DomainEntity; ownerId: string; archivedAt?: string; createdAt: string; updatedAt: string };\n" },
-    { path: "backend/src/security/access-control.ts", requirements: ["REQ-001", "REQ-002", "REQ-004"], content: 'import type { DomainRecord, Role } from "../domain/model.js";\nexport function canAccess(role: Role, userId: string, record: DomainRecord): boolean { return role === "Owner" || (record.ownerId === userId && !record.archivedAt); }\nexport function requireAccess(allowed: boolean): asserts allowed { if (!allowed) throw new Error("FORBIDDEN"); }\n' },
-    { path: "backend/src/api/contracts.ts", requirements: ["REQ-003", "REQ-004", "REQ-005"], content: 'import type { DomainEntity } from "../domain/model.js";\nexport type CreateRecordInput = { entity: DomainEntity; values: Record<string, unknown> };\nexport type AuditEnvelope<T> = { requirementId: string; actorId: string; payload: T };\n' },
-    { path: "backend/src/index.ts", requirements: ["REQ-001", "REQ-002", "REQ-003"], content: 'export const service = { name: ' + productLiteral + ', status: "ready", apiVersion: "v1" } as const;\n' },
+    { path: "backend/src/domain/model.ts", requirements: ["REQ-003", "REQ-004"], content: backend.model },
+    { path: "backend/src/security/access-control.ts", requirements: ["REQ-001", "REQ-002", "REQ-004"], content: backend.accessControl },
+    { path: "backend/src/api/contracts.ts", requirements: ["REQ-003", "REQ-004", "REQ-005"], content: backend.contracts },
+    { path: "backend/src/index.ts", requirements: ["REQ-001", "REQ-002", "REQ-003"], content: backend.index },
+    { path: "backend/tsconfig.json", requirements: ["REQ-006"], content: '{\n  "compilerOptions": { "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext", "strict": true, "esModuleInterop": true, "skipLibCheck": true, "outDir": "dist", "rootDir": "src", "types": ["node"] },\n  "include": ["src"]\n}\n' },
     { path: "tests/acceptance.test.ts", requirements: requirementIds, content: 'import test from "node:test";\nimport assert from "node:assert/strict";\ntest("approved architecture keeps requirement coverage", () => { assert.equal(' + JSON.stringify(requirementIds) + ".length, " + requirementIds.length + "); });\n" },
   ];
   return templates.map((template) => ({
@@ -280,6 +411,112 @@ function generateFiles(specification: MasterSpecification): GeneratedFile[] {
     requirementIds: template.requirements,
     digest: digest(template.content),
   }));
+}
+
+/** LLM-powered file generation with template fallback. */
+async function generateFiles(specification: MasterSpecification): Promise<{ files: GeneratedFile[]; llmMetadata: LlmGenerationMetadata }> {
+  const config = getLlmConfig();
+
+  if (config.enabled) {
+    try {
+      const provider = getLlmProvider();
+      const available = await provider.isAvailable();
+
+      if (available) {
+        // Generate frontend files
+        const frontendPrompt = buildFrontendPrompt(specification);
+        const frontendResponse = await provider.generate(frontendPrompt.user, {
+          systemPrompt: frontendPrompt.system,
+          temperature: 0.1,
+          maxTokens: 8192,
+        });
+        const frontendParsed = parseFileGenerationResponse(frontendResponse.content);
+
+        // Generate backend files
+        const backendPrompt = buildBackendPrompt(specification);
+        const backendResponse = await provider.generate(backendPrompt.user, {
+          systemPrompt: backendPrompt.system,
+          temperature: 0.1,
+          maxTokens: 4096,
+        });
+        const backendParsed = parseFileGenerationResponse(backendResponse.content);
+
+        if (frontendParsed && backendParsed) {
+          // Merge AI-authored source with the ForgeWeb-controlled baseline.
+          //
+          // The model authors the real React frontend and typed backend. ForgeWeb
+          // still guarantees a coherent, reviewable, sandbox-safe project:
+          //
+          //   1. ForgeWeb owns the sandbox preview artifact (frontend/preview.html).
+          //      It is served under a strict CSP (script-src 'none') and must carry
+          //      the required template marker, so it can never be AI-authored — any
+          //      model-emitted preview is dropped and the deterministic preview wins.
+          //   2. Every REQUIRED baseline artifact the model omitted is backfilled
+          //      with its deterministic version. AI-authored source that IS present
+          //      is preserved untouched. This guarantees hasProfessionalFrontend()
+          //      is satisfied, so the stored project is kept exactly as generated and
+          //      is never clobbered by the compatibility upgrade in getReady().
+          const previewPath = "frontend/preview.html";
+          const llmFiles = [...frontendParsed.files, ...backendParsed.files].filter((file) => file.path !== previewPath);
+
+          // Deterministic template provides scaffolding (README, ARCHITECTURE,
+          // package.json, tests, preview) and safe fallbacks for any omitted source.
+          const baseline = generateFilesTemplate(specification);
+          const baselineByPath = new Map(baseline.map((file) => [file.path, file]));
+          const requiredBaselinePaths = [
+            "README.md",
+            "ARCHITECTURE.md",
+            "package.json",
+            "frontend/index.html",
+            "frontend/tsconfig.json",
+            "frontend/src/App.tsx",
+            "frontend/src/styles.css",
+            "frontend/src/main.tsx",
+            previewPath,
+            "backend/tsconfig.json",
+            "backend/src/domain/model.ts",
+            "backend/src/security/access-control.ts",
+            "backend/src/api/contracts.ts",
+            "backend/src/index.ts",
+            "tests/acceptance.test.ts",
+          ];
+          const present = new Set(llmFiles.map((file) => file.path));
+          for (const path of requiredBaselinePaths) {
+            if (present.has(path)) continue;
+            const fallback = baselineByPath.get(path);
+            if (!fallback) continue;
+            llmFiles.push(fallback);
+            present.add(path);
+          }
+
+          const totalTokens = {
+            prompt: frontendResponse.tokensUsed.prompt + backendResponse.tokensUsed.prompt,
+            completion: frontendResponse.tokensUsed.completion + backendResponse.tokensUsed.completion,
+          };
+
+          return {
+            files: llmFiles,
+            llmMetadata: {
+              provider: provider.name,
+              model: frontendResponse.model,
+              tokensUsed: totalTokens,
+              durationMs: frontendResponse.durationMs + backendResponse.durationMs,
+              fallbackUsed: false,
+            },
+          };
+        }
+        console.warn("[ForgeWeb LLM] File generation response could not be parsed, falling back to template.");
+      }
+    } catch (error) {
+      console.warn("[ForgeWeb LLM] File generation failed, falling back to template:", error instanceof Error ? error.message : error);
+    }
+  }
+
+  // Fallback to template-based generation
+  return {
+    files: generateFilesTemplate(specification),
+    llmMetadata: createFallbackMetadata(),
+  };
 }
 function review(specification: MasterSpecification, implementationTask: AgentTask, files: GeneratedFile[]): ReviewFinding[] {
   const findings: ReviewFinding[] = [];
@@ -294,20 +531,77 @@ function review(specification: MasterSpecification, implementationTask: AgentTas
   return findings;
 }
 
-function validate(specification: MasterSpecification, files: GeneratedFile[], findings: ReviewFinding[]): ValidationCheck[] {
+/**
+ * AI-powered independent review. Augments — never replaces — the deterministic
+ * review, which remains the hard gate. The model can surface qualitative issues
+ * (security smells, unnecessary complexity, unclear coverage) that structural
+ * checks miss.
+ *
+ * These findings are advisory: a build that already passed the deterministic
+ * gate must not be hard-blocked by a model that may hallucinate. Any severity
+ * the model reports as "error" is recorded as a "warning" for gating purposes,
+ * with the original severity preserved in the message text for transparency.
+ * Returns [] when the provider is disabled, unavailable, or unparseable.
+ */
+async function aiReviewAdvisory(specification: MasterSpecification, files: GeneratedFile[]): Promise<ReviewFinding[]> {
+  const config = getLlmConfig();
+  if (!config.enabled) return [];
+
+  let provider: ReturnType<typeof getLlmProvider>;
+  try {
+    provider = getLlmProvider();
+    if (!(await provider.isAvailable())) return [];
+  } catch {
+    return [];
+  }
+
+  try {
+    const { system, user } = buildReviewPrompt(files, specification);
+    const response = await provider.generate(user, { systemPrompt: system, temperature: 0.1, maxTokens: 2048 });
+    const parsed = parseReviewResponse(response.content);
+    if (!parsed) return [];
+    return parsed.findings.map((finding) => ({
+      id: id("finding"),
+      severity: finding.severity === "error" ? "warning" : finding.severity,
+      message: `[AI reviewer${finding.severity === "error" ? " — model flagged as error" : ""}] ${finding.message}`,
+      ...(finding.path ? { path: finding.path } : {}),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Deterministic validation of a generated project. Exported so the gate can be
+ * unit-tested directly (including the failing P0-coverage path, which the
+ * deterministic review stage normally intercepts before validation runs).
+ */
+export function validateGeneratedProject(specification: MasterSpecification, files: GeneratedFile[], findings: ReviewFinding[]): ValidationCheck[] {
   const paths = new Set(files.map((file) => file.path));
   const traced = new Set(files.flatMap((file) => file.requirementIds));
+  // Strict P0 gate: every P0 requirement must map to at least one implementing
+  // file. That mapping is what earns the requirement its `SATISFIED_BY` and
+  // `VALIDATED_BY` edges in the traceability graph, because each check declares
+  // the files it inspected. Missing coverage must FAIL validation — never skip.
+  const p0Requirements = specification.requirements.filter((requirement) => requirement.priority === "P0");
+  const p0Uncovered = p0Requirements.filter((requirement) => !files.some((file) => file.requirementIds.includes(requirement.id)));
+  const allPaths = [...paths];
   const checks: ValidationCheck[] = [
-    { id: id("check"), name: "Safe generated paths", status: files.every((file) => !file.path.includes("..")) ? "passed" : "failed", evidence: `${files.length} repository-relative paths inspected.` },
-    { id: id("check"), name: "Architecture contract", status: paths.has("ARCHITECTURE.md") ? "passed" : "failed", evidence: "The approved architecture is preserved beside generated source." },
-    { id: id("check"), name: "Required secure boundary", status: paths.has("backend/src/security/access-control.ts") ? "passed" : "failed", evidence: "Server-side access-control artifact is present." },
-    { id: id("check"), name: "Customer frontend", status: paths.has("frontend/src/App.tsx") && paths.has("frontend/src/styles.css") ? "passed" : "failed", evidence: "Responsive React application and design system are present." },
-    { id: id("check"), name: "Professional preview artifact", status: files.find((file) => file.path === "frontend/preview.html")?.content.includes(GENERATED_FRONTEND_TEMPLATE) ? "passed" : "failed", evidence: "A stored, sandbox-renderable professional application preview is present." },
-    { id: id("check"), name: "Customer backend", status: paths.has("backend/src/index.ts") && paths.has("backend/src/api/contracts.ts") ? "passed" : "failed", evidence: "Typed backend entrypoint and API contracts are present." },
-    { id: id("check"), name: "Acceptance tests", status: paths.has("tests/acceptance.test.ts") ? "passed" : "failed", evidence: "Generated acceptance-test artifact is present." },
-    { id: id("check"), name: "Requirement traceability", status: specification.requirements.every((requirement) => traced.has(requirement.id)) ? "passed" : "failed", evidence: `${traced.size}/${specification.requirements.length} requirement identifiers mapped.` },
+    { id: id("check"), name: "Safe generated paths", status: files.every((file) => !file.path.includes("..")) ? "passed" : "failed", evidence: `${files.length} repository-relative paths inspected.`, subjectPaths: allPaths },
+    { id: id("check"), name: "Architecture contract", status: paths.has("ARCHITECTURE.md") ? "passed" : "failed", evidence: "The approved architecture is preserved beside generated source.", subjectPaths: ["ARCHITECTURE.md"] },
+    { id: id("check"), name: "Required secure boundary", status: paths.has("backend/src/security/access-control.ts") ? "passed" : "failed", evidence: "Server-side access-control artifact is present.", subjectPaths: ["backend/src/security/access-control.ts"] },
+    { id: id("check"), name: "Customer frontend", status: paths.has("frontend/src/App.tsx") && paths.has("frontend/src/styles.css") ? "passed" : "failed", evidence: "Responsive React application and design system are present.", subjectPaths: ["frontend/src/App.tsx", "frontend/src/styles.css"] },
+    { id: id("check"), name: "Professional preview artifact", status: files.find((file) => file.path === "frontend/preview.html")?.content.includes(GENERATED_FRONTEND_TEMPLATE) ? "passed" : "failed", evidence: "A stored, sandbox-renderable professional application preview is present.", subjectPaths: ["frontend/preview.html"] },
+    { id: id("check"), name: "Customer backend", status: paths.has("backend/src/index.ts") && paths.has("backend/src/api/contracts.ts") ? "passed" : "failed", evidence: "Typed backend entrypoint and API contracts are present.", subjectPaths: ["backend/src/index.ts", "backend/src/api/contracts.ts"] },
+    { id: id("check"), name: "Acceptance tests", status: paths.has("tests/acceptance.test.ts") ? "passed" : "failed", evidence: "Generated acceptance-test artifact is present.", subjectPaths: ["tests/acceptance.test.ts"] },
+    { id: id("check"), name: "Requirement traceability", status: specification.requirements.every((requirement) => traced.has(requirement.id)) ? "passed" : "failed", evidence: `${traced.size}/${specification.requirements.length} requirement identifiers mapped.`, subjectPaths: allPaths },
+    { id: id("check"), name: "P0 requirement coverage", status: p0Uncovered.length === 0 ? "passed" : "failed", evidence: p0Uncovered.length === 0 ? `${p0Requirements.length} P0 requirement(s) each map to generated implementation and validation.` : `${p0Uncovered.length} P0 requirement(s) lack implementation mapping: ${p0Uncovered.map((requirement) => requirement.id).join(", ")}.`, subjectPaths: allPaths },
     { id: id("check"), name: "Independent review", status: findings.every((finding) => finding.severity !== "error") ? "passed" : "failed", evidence: `${findings.length} review record(s) evaluated.` },
     { id: id("check"), name: "Policy provenance", status: AGENT_POLICY.sourceRevision.length >= 7 && AGENT_POLICY.sourceDigest.startsWith("sha256:") ? "passed" : "failed", evidence: `${AGENT_POLICY.version} at upstream revision ${AGENT_POLICY.sourceRevision}.` },
+    // Honest reporting: the control plane cannot compile the generated app's own
+    // TypeScript here, so this check is reported as skipped with a reason rather
+    // than a fabricated pass. The exported project ships its own tsc/vite scripts.
+    { id: id("check"), name: "Generated application type-check", status: "skipped", evidence: "Skipped: ForgeWeb does not compile generated application code in the control plane. The exported project includes its own TypeScript/Vite toolchain (npm run typecheck && npm run build) for the developer to run." },
   ];
   return checks;
 }
@@ -323,14 +617,32 @@ function buildGraph(project: Project, build: Build, specification: MasterSpecifi
     nodes.push({ id: task.id, type: "task", label: task.objective, metadata: { role: task.role } });
     for (const requirementId of task.requirementIds) edges.push({ id: id("edge"), type: "PERFORMED_BY", from: requirementId, to: task.id });
   }
+  // Requirement -> implementing files, and the reverse index used below to
+  // attribute validation checks back to the requirements they actually cover.
+  const filesByRequirement = new Map<string, Set<string>>();
   for (const file of files) {
     const fileId = `file:${file.path}`;
     nodes.push({ id: fileId, type: "file", label: file.path, metadata: { digest: file.digest } });
-    for (const requirementId of file.requirementIds) edges.push({ id: id("edge"), type: "SATISFIED_BY", from: requirementId, to: fileId });
+    for (const requirementId of file.requirementIds) {
+      edges.push({ id: id("edge"), type: "SATISFIED_BY", from: requirementId, to: fileId });
+      const paths = filesByRequirement.get(requirementId) ?? new Set<string>();
+      paths.add(file.path);
+      filesByRequirement.set(requirementId, paths);
+    }
   }
   for (const check of checks) {
     nodes.push({ id: check.id, type: "validation", label: check.name, metadata: { status: check.status } });
+    // Project-wide evidence: every check belongs to the build's validation record.
     edges.push({ id: id("edge"), type: "VALIDATED_BY", from: project.id, to: check.id });
+    // Requirement-level evidence: a requirement is only reported as validated by
+    // a check that inspected at least one file implementing that requirement, so
+    // an unimplemented requirement gains no validation edge it did not earn.
+    for (const requirement of specification.requirements) {
+      const implementing = filesByRequirement.get(requirement.id);
+      if (!implementing) continue;
+      if (!(check.subjectPaths ?? []).some((path) => implementing.has(path))) continue;
+      edges.push({ id: id("edge"), type: "VALIDATED_BY", from: requirement.id, to: check.id });
+    }
   }
   return {
     id: id("graph"),
@@ -434,12 +746,14 @@ export class BuildWorkflow {
       if (!sourcePrompt) throw new ApiError(500, "MISSING_PROMPT", "Build cannot resume without a prompt.");
 
       await this.stage(buildId, "specifying", "Turning the idea into a proposed, versioned master specification.");
-      const specification = compileSpecification(initial.projectId, sourcePrompt);
+      const { specification, llmMetadata: specLlmMetadata } = await compileSpecification(initial.projectId, sourcePrompt);
       await this.store.mutate((database) => {
         database.specifications[specification.id] = specification;
         const build = database.builds[buildId];
         build.specificationId = specification.id;
-        build.stageDetail = `${specification.requirements.length} proposed requirements mapped across ${specification.entities.length} domain entities.`;
+        build.llmMetadata = specLlmMetadata;
+        const modeLabel = specLlmMetadata.fallbackUsed ? "template" : `AI (${specLlmMetadata.model})`;
+        build.stageDetail = `${specification.requirements.length} proposed requirements mapped across ${specification.entities.length} domain entities [${modeLabel}].`;
         const project = database.projects[build.projectId];
         project.currentSpecificationId = specification.id;
         project.updatedAt = now();
@@ -457,7 +771,7 @@ export class BuildWorkflow {
 
       await this.store.mutate((database) => {
         const build = database.builds[buildId];
-        build.status = "awaiting_confirmation";
+        setBuildStatus(build, "awaiting_confirmation");
         build.stageDetail = `Architecture and ${specification.requirements.length} requirements are ready for confirmation. No source has been generated.`;
         build.updatedAt = now();
         const project = database.projects[build.projectId];
@@ -475,8 +789,32 @@ export class BuildWorkflow {
     }
   }
 
+  async revise(buildId: string, notesValue: unknown): Promise<BuildView> {
+    const current = this.get(buildId);
+    if (current.status !== "awaiting_confirmation" || !current.specification) {
+      throw new ApiError(409, "INVALID_BUILD_STATE", "The specification can only be revised while it is awaiting confirmation.");
+    }
+    const notes = assertPrompt(notesValue);
+    const original = current.specification.prompt;
+    const revised = `${original}\n\nRevision notes from the user:\n${notes}`;
+    await this.store.mutate((database) => {
+      const build = database.builds[buildId];
+      setBuildStatus(build, "specifying");
+      build.planningRecordId = undefined;
+      build.stageDetail = "Revising the specification from user feedback.";
+      build.updatedAt = now();
+      const project = database.projects[build.projectId];
+      project.status = "planning";
+      project.updatedAt = now();
+      this.pushEvent(database.events[buildId], buildId, "build.stage.started", "Specification revision requested by the user.", { stage: "specifying" as const, stageIndex: stageIndexes.specifying });
+    });
+    void this.prepare(buildId, revised);
+    return this.get(buildId);
+  }
+
   async confirm(buildId: string): Promise<BuildView> {
     const current = this.get(buildId);
+    if (current.planningRecordId) throw new ApiError(409, "PLANNING_GENERATION_UNAVAILABLE", "An exact planning approval and a supported generation capability are required.");
     if (current.status === "completed") return current;
     if (current.status !== "awaiting_confirmation" || !current.specification) {
       throw new ApiError(409, "INVALID_BUILD_STATE", "Requirements can only be confirmed after the architecture proposal is ready.");
@@ -484,11 +822,12 @@ export class BuildWorkflow {
     const confirmedAt = now();
     await this.store.mutate((database) => {
       const build = database.builds[buildId];
+      if (build.planningRecordId) throw new ApiError(409, "PLANNING_GENERATION_UNAVAILABLE", "Planning approvals cannot start the legacy generator.");
       const specification = database.specifications[build.specificationId!];
       specification.status = "approved";
       specification.confirmedAt = confirmedAt;
       build.confirmedAt = confirmedAt;
-      build.status = "generating";
+      setBuildStatus(build, "generating");
       build.stageDetail = "Requirements confirmed. Starting frontend and backend generation.";
       build.updatedAt = confirmedAt;
       const project = database.projects[build.projectId];
@@ -507,6 +846,7 @@ export class BuildWorkflow {
     try {
       const initial = this.get(buildId);
       const specification = initial.specification;
+      if (initial.planningRecordId) throw new ApiError(409, "PLANNING_GENERATION_UNAVAILABLE", "Planning approvals cannot start the legacy generator.");
       if (!specification || specification.status !== "approved") {
         throw new ApiError(409, "SPECIFICATION_NOT_CONFIRMED", "Frontend and backend generation requires an approved specification.");
       }
@@ -515,33 +855,42 @@ export class BuildWorkflow {
       if (tasks.length === 0) throw new ApiError(500, "TASK_PLAN_INVALID", "Approved task plan is missing.");
 
       await this.stage(buildId, "generating", "Generating a minimal secure application skeleton in an isolated manifest.");
-      const files = generateFiles(specification);
+      const { files, llmMetadata: genLlmMetadata } = await generateFiles(specification);
       const implementationTask = tasks.find((task) => task.role === "implementation");
       if (!implementationTask) throw new ApiError(500, "TASK_PLAN_INVALID", "Implementation task is missing.");
       enforceImplementationTask(implementationTask, files);
       await this.store.mutate((database) => {
         database.files[buildId] = files;
-        database.builds[buildId].filePaths = files.map((file) => file.path);
-        database.builds[buildId].stageDetail = `${files.length} scoped files generated with complete file digests.`;
-        for (const taskId of database.builds[buildId].taskIds) database.tasks[taskId].status = "completed";
+        const build = database.builds[buildId];
+        build.filePaths = files.map((file) => file.path);
+        build.llmMetadata = genLlmMetadata;
+        const modeLabel = genLlmMetadata.fallbackUsed ? "template" : `AI (${genLlmMetadata.model})`;
+        build.stageDetail = `${files.length} scoped files generated with complete file digests [${modeLabel}].`;
+        for (const taskId of build.taskIds) database.tasks[taskId].status = "completed";
       });
       await this.completeStage(buildId);
 
       await this.stage(buildId, "reviewing", "Running an independent scope, simplicity, and traceability review.");
-      const findings = review(specification, implementationTask, files);
-      if (findings.some((finding) => finding.severity === "error")) throw new ApiError(422, "REVIEW_FAILED", "Independent engineering review found blocking issues.");
+      const deterministicFindings = review(specification, implementationTask, files);
+      if (deterministicFindings.some((finding) => finding.severity === "error")) throw new ApiError(422, "REVIEW_FAILED", "Independent engineering review found blocking issues.");
+      // Deterministic gate passed — augment with advisory AI findings (non-blocking).
+      const advisoryFindings = await aiReviewAdvisory(specification, files);
+      const findings = [...deterministicFindings, ...advisoryFindings];
       await this.store.mutate((database) => {
         database.builds[buildId].reviewFindings = findings;
-        database.builds[buildId].stageDetail = "Independent engineering review passed without blocking findings.";
+        const advisoryNote = advisoryFindings.length > 0 ? ` ${advisoryFindings.length} advisory AI review finding(s) recorded.` : "";
+        database.builds[buildId].stageDetail = `Independent engineering review passed without blocking findings.${advisoryNote}`;
       });
       await this.completeStage(buildId);
 
       await this.stage(buildId, "validating", "Validating paths, security boundary, tests, provenance, and requirement coverage.");
-      const checks = validate(specification, files, findings);
+      const checks = validateGeneratedProject(specification, files, findings);
       if (checks.some((check) => check.status === "failed")) throw new ApiError(422, "VALIDATION_FAILED", "One or more required validation checks failed.");
+      const passedChecks = checks.filter((check) => check.status === "passed").length;
+      const skippedChecks = checks.filter((check) => check.status === "skipped").length;
       await this.store.mutate((database) => {
         database.builds[buildId].validationChecks = checks;
-        database.builds[buildId].stageDetail = `${checks.length} deterministic validation checks passed.`;
+        database.builds[buildId].stageDetail = `${passedChecks} deterministic validation checks passed${skippedChecks > 0 ? `, ${skippedChecks} skipped (cannot run in the control plane)` : ""}.`;
       });
       await this.completeStage(buildId);
 
@@ -550,9 +899,9 @@ export class BuildWorkflow {
       await this.store.mutate((database) => {
         database.graphs[graph.id] = graph;
         const build = database.builds[buildId];
-        build.status = "completed";
+        setBuildStatus(build, "completed");
         build.currentStageIndex = stageIndexes.completed;
-        build.stageDetail = `Validated — ${checks.length} checks passed and ${graph.nodes.length} graph nodes synchronized.`;
+        build.stageDetail = `Validated — ${passedChecks} checks passed${skippedChecks > 0 ? ` and ${skippedChecks} skipped` : ""}, ${graph.nodes.length} graph nodes synchronized.`;
         build.graphSnapshotId = graph.id;
         build.completedAt = now();
         build.updatedAt = now();
@@ -593,7 +942,10 @@ export class BuildWorkflow {
     await this.store.mutate((database) => {
       const build = database.builds[buildId];
       if (!build) return;
-      build.status = "failed";
+      // fail() runs from error handlers and could fire after the build already
+      // reached a terminal state; only record the failure if it is a legal move.
+      if (!canTransition(build.status, "failed")) return;
+      setBuildStatus(build, "failed");
       build.error = { code, message };
       build.stageDetail = message;
       build.updatedAt = now();
@@ -606,7 +958,7 @@ export class BuildWorkflow {
     await delay(this.stageDelayMs);
     await this.store.mutate((database) => {
       const build = database.builds[buildId];
-      build.status = status;
+      setBuildStatus(build, status);
       build.currentStageIndex = stageIndexes[status];
       build.stageDetail = detail;
       build.updatedAt = now();

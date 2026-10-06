@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import "./env.ts";
 import { createForgeWebServer } from "./app.ts";
 import { JsonStore } from "./store.ts";
 import { BuildWorkflow } from "./workflow.ts";

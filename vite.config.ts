@@ -5,13 +5,17 @@ import tailwindcss from "@tailwindcss/vite";
 import { createForgeWebRequestHandler, type ForgeWebRequestHandler } from "./server/app.ts";
 import { JsonStore } from "./server/store.ts";
 import { BuildWorkflow } from "./server/workflow.ts";
+import { resetLlmConfig, resetLlmProvider } from "./server/llm/index.ts";
 
 function forgeWebDevApi(): Plugin {
   let handler: Promise<ForgeWebRequestHandler> | undefined;
   return {
     name: "forgeweb-dev-api",
     configureServer(server) {
-      handler ??= (async () => {
+      // Reset LLM singletons so .env changes are picked up on Vite restart.
+      resetLlmConfig();
+      resetLlmProvider();
+      handler = (async () => {
         const store = new JsonStore(resolve(process.cwd(), ".forgeweb-data"));
         await store.initialize();
         return createForgeWebRequestHandler(new BuildWorkflow(store));

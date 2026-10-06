@@ -46,7 +46,7 @@ export type ProjectVersion = {
   modifiedFiles: string[];
   sourceVersionId?: string;
   validationStatus: "pending" | "passed" | "failed";
-  validationChecks: Array<{ id: string; name: string; status: "passed" | "failed"; evidence: string }>;
+  validationChecks: Array<{ id: string; name: string; status: "passed" | "failed" | "skipped"; evidence: string }>;
   createdAt: string;
 };
 
@@ -73,7 +73,16 @@ export type ExportSummary = {
   database: "configured" | "not-required";
   validation: "passed" | "failed";
   fileCount: number;
-  checks: Array<{ id: string; name: string; status: "passed" | "failed"; evidence: string }>;
+  checks: Array<{ id: string; name: string; status: "passed" | "failed" | "skipped"; evidence: string }>;
+};
+
+export type LlmStatus = {
+  enabled: boolean;
+  available: boolean;
+  provider: string;
+  model: string;
+  mode: "ai-powered" | "template-fallback";
+  baseUrl: string;
 };
 
 export type BuildResponse = {
@@ -83,6 +92,7 @@ export type BuildResponse = {
   currentStageIndex: number;
   stageDetail: string;
   error?: { code: string; message: string };
+  llmMetadata?: { provider: string; model: string; fallbackUsed: boolean; durationMs: number };
   specification?: {
     id: string;
     status: "proposed" | "approved";
@@ -95,7 +105,7 @@ export type BuildResponse = {
     architecture: ArchitecturePlan;
   };
   filePaths: string[];
-  validationChecks: Array<{ id: string; name: string; status: "passed" | "failed"; evidence: string }>;
+  validationChecks: Array<{ id: string; name: string; status: "passed" | "failed" | "skipped"; evidence: string }>;
   project: ProjectSummary;
 };
 
@@ -121,6 +131,11 @@ export async function confirmBuild(buildId: string): Promise<BuildResponse> {
   return payload.build;
 }
 
+export async function reviseBuild(buildId: string, prompt: string): Promise<BuildResponse> {
+  const payload = await request<ApiEnvelope>(`/api/builds/${encodeURIComponent(buildId)}/revise`, { method: "POST", body: JSON.stringify({ prompt }) });
+  return payload.build;
+}
+
 export async function getBuild(buildId: string): Promise<BuildResponse> {
   const payload = await request<ApiEnvelope>(`/api/builds/${encodeURIComponent(buildId)}`);
   return payload.build;
@@ -129,6 +144,11 @@ export async function getBuild(buildId: string): Promise<BuildResponse> {
 export async function listProjects(): Promise<ProjectSummary[]> {
   const payload = await request<{ projects: ProjectSummary[] }>("/api/projects");
   return payload.projects;
+}
+
+export async function getLlmStatus(): Promise<LlmStatus> {
+  const payload = await request<{ llm: LlmStatus }>("/api/llm/status");
+  return payload.llm;
 }
 
 export async function getProjectWorkspace(projectId: string): Promise<ProjectWorkspace> {
