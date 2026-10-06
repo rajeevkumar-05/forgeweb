@@ -7,8 +7,10 @@ import type {
 import type { RequirementSpec } from "./upstream/shared/types/requirement.ts";
 import type { ArchitecturePlan as NexArchitecturePlan } from "./upstream/shared/types/architecture.ts";
 import { analyzeRequirements, designDatabase, planArchitecture } from "./upstream/planning.ts";
+import { databaseTargetContract, MYSQL_PLANNING_PROFILE, POSTGRESQL_APPLICATION_PROFILE, resolveDatabaseTarget } from "../targets.ts";
 
-export const NEXARCH_PLANNING_PROFILE = "nexarch-mysql8-planning-v1";
+export const NEXARCH_PLANNING_PROFILE = MYSQL_PLANNING_PROFILE;
+export const NEXARCH_POSTGRESQL_PLANNING_PROFILE = POSTGRESQL_APPLICATION_PROFILE;
 const ENGINE: EngineMetadata = { name: "nexarch-planning", version: "398f4cbd9e314954eda95540411ed4d06cd50cf3", contractVersion: "forgeweb-generation-v1" };
 
 export class PlanningProviderError extends Error {}
@@ -35,8 +37,11 @@ function validRequest(request: PlanningRequest): string | null {
   if (request.base.kind === "empty" && request.base.files.length) return "Empty base cannot contain files";
   if (request.base.kind === "version" && !request.base.versionId) return "Base version identity is required";
   if (request.base.manifestDigest !== fileManifestDigest(request.base.files)) return "Base manifest digest mismatch";
-  if (request.databaseDialect !== "mysql8") return "NexArch planning supports MySQL 8 only; PostgreSQL requires a separately validated adapter";
-  if (request.options?.targetProfile !== NEXARCH_PLANNING_PROFILE) return "NexArch planning supports only the explicit MySQL 8 planning profile";
+  try {
+    resolveDatabaseTarget(request.databaseDialect, request.options?.targetProfile);
+  } catch (error) {
+    return error instanceof Error ? error.message : "An explicit supported database target is required";
+  }
   if (typeof request.prompt !== "string" || request.prompt.trim().length < 12 || request.prompt.length > 20_000) return "Prompt must be 12 to 20,000 characters";
   return null;
 }
@@ -63,7 +68,8 @@ function adaptArchitecture(plan: NexArchitecturePlan, markdown: string, analysis
   const adaptFolder = (folder: NexArchitecturePlan["folderStructure"][number]): PlanningFolder => ({ name: folder.name, type: folder.type, children: folder.children?.map(adaptFolder) });
   const requirementIds = new Map(analysis.proposedRequirements.map((requirement, index) => [requirement.title.replace(/^Manage /, ""), `REQ-${String(index + 1).padStart(3, "0")}`]));
   const apiEndpoints = plan.apiModules.flatMap((module) => module.endpoints.map((endpoint) => ({
-    method: endpoint.method, path: endpoint.path,
+    method: endpoint.method, path: endpoint.path, description: endpoint.description, auth: endpoint.auth,
+    roles: endpoint.roles ? [...endpoint.roles] : [],
     requirementIds: [requirementIds.get(module.module === "Auth" ? "Authentication" : module.module)].filter((id): id is string => Boolean(id)),
   })));
   return {
@@ -93,28 +99,33 @@ function adaptArchitecture(plan: NexArchitecturePlan, markdown: string, analysis
 function adaptDatabase(design: ReturnType<PlanningBackend["designDatabase"]>): DatabaseDesign {
   return {
     dialect: design.meta.engine,
+    target: databaseTargetContract(design.target),
     entities: design.tables.map((table) => ({
       name: table.entity, tableName: table.tableName, primaryKey: table.primaryKey,
-      fields: table.columns.map((column) => ({ name: column.name, type: column.sqlType, nullable: column.nullable, primaryKey: column.primaryKey, unique: column.unique, defaultExpression: column.defaultExpression, references: column.references && { ...column.references }, enumValues: column.enumValues && [...column.enumValues], nonNegative: column.nonNegative, format: column.format, description: column.description })),
+      fields: table.columns.map((column) => ({ name: column.name, type: column.sqlType, prismaType: column.prismaType, prismaNativeType: column.prismaNativeType, nullable: column.nullable, primaryKey: column.primaryKey, unique: column.unique, defaultExpression: column.defaultExpression, onUpdateNow: column.onUpdateNow, references: column.references && { ...column.references }, enumValues: column.enumValues && [...column.enumValues], enumDatabaseType: column.enumDatabaseType, nonNegative: column.nonNegative, format: column.format, description: column.description })),
       indexes: table.indexes.map((index) => ({ name: index.name, columns: [...index.columns], unique: index.unique })),
       softDelete: table.softDelete,
     })),
-    relationships: design.relationships.map((relation) => ({ from: relation.child, to: relation.parent, kind: relation.cardinality, foreignKey: relation.foreignKey, onDelete: relation.onDelete })),
-    metadata: { version: design.meta.databaseVersion, normalForm: design.meta.normalForm, enums: design.enums.map((item) => ({ name: item.name, values: [...item.values] })) },
+    relationships: design.relationships.map((relation) => ({ from: relation.child, to: relation.parent, kind: relation.cardinality, foreignKey: relation.foreignKey, onDelete: relation.onDelete, onUpdate: relation.onUpdate })),
+    metadata: { version: design.meta.databaseVersion, normalForm: design.meta.normalForm, enums: design.enums.map((item) => ({ name: item.name, values: [...item.values], databaseName: item.databaseName })) },
   };
 }
 
 function validateDatabaseDesign(design: DatabaseDesign): string | null {
   const names = new Set<string>();
   const tableNames = new Set<string>();
+  const maxIdentifierLength = design.target.identifiers.maxLength;
   for (const entity of design.entities) {
     if (!entity.tableName || names.has(entity.name) || tableNames.has(entity.tableName)) return "Database entities must have unique names and table names";
+    if (entity.tableName.length > maxIdentifierLength) return `Table identifier exceeds ${maxIdentifierLength} characters in ${entity.name}`;
     names.add(entity.name);
     tableNames.add(entity.tableName);
     const fields = new Set(entity.fields.map((field) => field.name));
+    if (entity.fields.some((field) => field.name.length > maxIdentifierLength || (field.enumDatabaseType?.length ?? 0) > maxIdentifierLength)) return `Column identifier exceeds ${maxIdentifierLength} characters in ${entity.name}`;
     if (!entity.primaryKey || !fields.has(entity.primaryKey)) return `Missing primary key in ${entity.name}`;
     for (const index of entity.indexes ?? []) {
       if (!index.columns.length || index.columns.some((column) => !fields.has(column))) return `Invalid index in ${entity.name}`;
+      if (index.name.length > maxIdentifierLength) return `Index identifier exceeds ${maxIdentifierLength} characters in ${entity.name}`;
     }
   }
   for (const entity of design.entities) {
@@ -141,7 +152,7 @@ export class NexArchPlanningAdapter implements Pick<GenerationEngine, "analyzeRe
 
   async analyzeRequirements(request: PlanningRequest): Promise<EngineResult<RequirementsAnalysis>> {
     const invalid = validRequest(request);
-    if (invalid) return failure(request.databaseDialect === "postgresql" ? "unsupported_capability" : "validation_failure", "analysis", invalid);
+    if (invalid) return failure("validation_failure", "analysis", invalid);
     try {
       const result = this.backend.analyzeRequirements(request.prompt);
       if (result.status === "INCOMPLETE") return success({ proposedRequirements: [], questions: [...result.questions], context: contextFor(request) });
@@ -157,33 +168,37 @@ export class NexArchPlanningAdapter implements Pick<GenerationEngine, "analyzeRe
 
   async planArchitecture(request: ArchitectureRequest): Promise<EngineResult<ArchitectureDraft>> {
     const invalid = validRequest(request);
-    if (invalid) return failure(request.databaseDialect === "postgresql" ? "unsupported_capability" : "validation_failure", "architecture", invalid);
+    if (invalid) return failure("validation_failure", "architecture", invalid);
     if (!hasContext(request, request.analysis.context)) return failure("security_failure", "architecture", "Analysis belongs to another ForgeWeb context");
     const spec = specFromAnalysis(request.analysis);
     if (!spec) return failure("validation_failure", "architecture", "Complete requirement facets are required");
     try {
-      const { plan, markdown } = this.backend.planArchitecture(spec);
-      if (plan.database.engine !== "MySQL 8") return failure("unsupported_capability", "architecture", "Planner database dialect is not MySQL 8");
+      const target = resolveDatabaseTarget(request.databaseDialect, request.options.targetProfile);
+      const { plan, markdown } = this.backend.planArchitecture(spec, target);
+      if (plan.database.engine !== target.engine) return failure("unsupported_capability", "architecture", "Planner database dialect does not match the selected target");
       return success(adaptArchitecture(plan, markdown, request.analysis));
     } catch (error) { return catchFailure(error, "architecture"); }
   }
 
   async designDatabase(request: DatabaseRequest): Promise<EngineResult<DatabaseDesign>> {
     const invalid = validRequest(request);
-    if (invalid) return failure(request.databaseDialect === "postgresql" ? "unsupported_capability" : "validation_failure", "database-design", invalid);
+    if (invalid) return failure("validation_failure", "database-design", invalid);
     if (!hasContext(request, request.analysis.context) || !hasContext(request, request.architecture.context)) return failure("security_failure", "database-design", "Planning result belongs to another ForgeWeb context");
     const spec = specFromAnalysis(request.analysis);
     if (!spec || !request.architecture.structure) return failure("validation_failure", "database-design", "Complete analysis and architecture are required");
     try {
-      const { plan, markdown } = this.backend.planArchitecture(spec);
+      const target = resolveDatabaseTarget(request.databaseDialect, request.options.targetProfile);
+      const { plan, markdown } = this.backend.planArchitecture(spec, target);
       const expected = adaptArchitecture(plan, markdown, request.analysis);
       if (digest(JSON.stringify(request.architecture.structure)) !== digest(JSON.stringify(expected.structure))
         || digest(JSON.stringify(request.architecture.endpoints)) !== digest(JSON.stringify(expected.endpoints))) {
         return failure("validation_failure", "database-design", "Architecture does not match the analyzed requirements");
       }
-      if (plan.database.engine !== "MySQL 8") return failure("unsupported_capability", "database-design", "Only MySQL 8 database design is supported");
-      const design = this.backend.designDatabase(plan, spec);
-      if (design.meta.engine !== "MySQL 8") return failure("unsupported_capability", "database-design", "Only MySQL 8 database design is supported");
+      if (plan.database.engine !== target.engine) return failure("unsupported_capability", "database-design", "Planner database dialect does not match the selected target");
+      const design = this.backend.designDatabase(plan, spec, target);
+      if (design.meta.engine !== target.engine || digest(JSON.stringify(design.target)) !== digest(JSON.stringify(target))) {
+        return failure("unsupported_capability", "database-design", "Database design does not match the selected target");
+      }
       const adapted = adaptDatabase(design);
       const designError = validateDatabaseDesign(adapted);
       if (designError) return failure("validation_failure", "database-design", designError);

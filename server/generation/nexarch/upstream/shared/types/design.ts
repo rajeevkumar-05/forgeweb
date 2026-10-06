@@ -12,12 +12,96 @@
 
 /* ── Relational design ───────────────────────────────────────────────── */
 
-export type OnDelete = 'CASCADE' | 'RESTRICT' | 'SET NULL' | 'NO ACTION';
+export type ReferentialAction = 'CASCADE' | 'RESTRICT' | 'SET NULL' | 'NO ACTION';
+export type OnDelete = ReferentialAction;
+export type OnUpdate = ReferentialAction;
+
+export type DatabaseDialect = 'mysql8' | 'postgresql';
+export type DatabaseScalarKind =
+  | 'string32'
+  | 'string64'
+  | 'string191'
+  | 'string255'
+  | 'string320'
+  | 'string512'
+  | 'decimal12_2'
+  | 'integer'
+  | 'boolean'
+  | 'timestamp'
+  | 'date'
+  | 'text'
+  | 'json';
+
+export interface SqlPrismaType {
+  readonly sqlType: string;
+  readonly prismaType: string;
+  readonly prismaNativeType?: string;
+}
+
+/** Explicit database capabilities selected before architecture or column design. */
+export interface DatabaseTargetStrategy {
+  readonly dialect: DatabaseDialect;
+  readonly profile: string;
+  readonly engine: 'MySQL 8' | 'PostgreSQL';
+  readonly version: string;
+  readonly provider: 'mysql' | 'postgresql';
+  readonly connection: {
+    readonly envVar: 'DATABASE_URL';
+    readonly placeholder: string;
+  };
+  readonly scalarTypes: Readonly<Record<DatabaseScalarKind, SqlPrismaType>>;
+  readonly enum: {
+    readonly representation: 'inline-native' | 'named-native';
+    readonly identifierStyle: 'inline' | 'snake_case';
+  };
+  readonly uuid: SqlPrismaType & {
+    readonly sqlDefaultExpression: string;
+    readonly prismaDefaultExpression: string;
+  };
+  readonly timestamps: SqlPrismaType & {
+    readonly createdDefaultExpression: string;
+    readonly updatedDefaultExpression?: string;
+    readonly updateBehavior: 'prisma-updated-at';
+  };
+  readonly defaults: {
+    readonly currentTimestamp: string;
+    readonly booleanTrue: string;
+    readonly booleanFalse: string;
+  };
+  readonly foreignKeys: {
+    readonly supportedDeleteActions: readonly OnDelete[];
+    readonly supportedUpdateActions: readonly OnUpdate[];
+    readonly defaultUpdateAction: OnUpdate;
+  };
+  readonly indexes: {
+    readonly foreignKeys: 'explicit';
+    readonly uniqueness: 'unique-index';
+    readonly partialIndexes: boolean;
+  };
+  readonly identifiers: {
+    readonly quote: '`' | '"';
+    readonly maxLength: number;
+    readonly unquotedCase: 'preserve' | 'lowercase';
+    readonly overflow: 'reject';
+  };
+  readonly migration: {
+    readonly tool: 'prisma-migrate';
+    readonly strategy: 'versioned';
+    readonly destructiveReset: false;
+  };
+  readonly prisma: {
+    readonly provider: 'mysql' | 'postgresql';
+    readonly datasourceName: 'db';
+    readonly urlExpression: 'env("DATABASE_URL")';
+    readonly datasource: string;
+  };
+}
 
 export interface ForeignKeyRef {
   table: string;
   column: string;
   onDelete: OnDelete;
+  onUpdate: OnUpdate;
 }
 
 export interface ColumnDesign {
@@ -25,7 +109,7 @@ export interface ColumnDesign {
   name: string;
   /** camelCase Prisma field name. */
   field: string;
-  /** Full MySQL type, e.g. `VARCHAR(255)`, `DECIMAL(12,2)`, `CHAR(36)`. */
+  /** Full SQL type for the selected target dialect. */
   sqlType: string;
   /** Prisma scalar or enum type, e.g. `String`, `Decimal`, `OrderStatus`. */
   prismaType: string;
@@ -42,6 +126,8 @@ export interface ColumnDesign {
   onUpdateNow?: boolean;
   /** Allowed values when the column is enum-backed. */
   enumValues?: string[];
+  /** Physical named-enum type for dialects that do not support inline ENUM. */
+  enumDatabaseType?: string;
   /** Semantic format for validation/OpenAPI: `email`, `phone`, `uuid`, `date`, `uri`, `slug`. */
   format?: string;
   /** Numeric column that must be >= 0 (money, quantities). */
@@ -81,12 +167,14 @@ export interface RelationshipDesign {
   child: string;
   foreignKey: string;
   onDelete: OnDelete;
+  onUpdate?: OnUpdate;
   description: string;
 }
 
 export interface PrismaEnumDesign {
   name: string;
   values: string[];
+  databaseName?: string;
 }
 
 /* ── Optimization ────────────────────────────────────────────────────── */
@@ -109,12 +197,13 @@ export interface DatabaseDesign {
   meta: {
     projectName: string;
     projectType: string;
-    engine: string;
+    engine: DatabaseTargetStrategy['engine'];
     databaseVersion: string;
     normalForm: string;
     generatedAt: string;
     generator: string;
   };
+  target: DatabaseTargetStrategy;
   enums: PrismaEnumDesign[];
   tables: TableDesign[];
   relationships: RelationshipDesign[];
@@ -314,4 +403,3 @@ export interface DesignBundle {
   entityMetadata: EntityMetadataSet;
   integrity: IntegrityReport;
 }
-

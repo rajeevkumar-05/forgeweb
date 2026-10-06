@@ -2,7 +2,7 @@
  * TableDesigner: assembles a full `TableDesign` for one architecture entity.
  *
  * Every table follows the platform's relational conventions:
- *   • `id` CHAR(36) UUID primary key
+ *   • target-native UUID primary key
  *   • inferred business columns (from the architecture key-field hints)
  *   • foreign-key columns from the relationship engine
  *   • `created_at` / `updated_at` audit columns, and `deleted_at` for soft
@@ -15,6 +15,7 @@ import type { EntityPlan } from '../../../shared/types/architecture.ts';
 import { camelCase } from '../../../shared/utils/strings.ts';
 import type {
   ColumnDesign,
+  DatabaseTargetStrategy,
   IndexDesign,
   OnDelete,
   PrismaEnumDesign,
@@ -27,19 +28,19 @@ import { resolveForeignKeys } from './relationship-engine.ts';
 /** Key-field hints that the designer manages itself and must not re-infer. */
 const RESERVED_FIELDS = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
 
-function primaryKeyColumn(): ColumnDesign {
+function primaryKeyColumn(target: DatabaseTargetStrategy): ColumnDesign {
   return {
     name: 'id',
     field: 'id',
-    sqlType: 'CHAR(36)',
-    prismaType: 'String',
-    prismaNativeType: '@db.Char(36)',
+    sqlType: target.uuid.sqlType,
+    prismaType: target.uuid.prismaType,
+    ...(target.uuid.prismaNativeType ? { prismaNativeType: target.uuid.prismaNativeType } : {}),
     nullable: false,
     primaryKey: true,
     unique: true,
-    defaultExpression: 'uuid()',
+    defaultExpression: target.uuid.sqlDefaultExpression,
     format: 'uuid',
-    description: 'Primary key (UUID v4, generated on insert).',
+    description: 'Primary key (UUID generated on insert).',
   };
 }
 
@@ -48,51 +49,56 @@ function foreignKeyColumn(
   parent: string,
   nullable: boolean,
   onDelete: OnDelete,
+  target: DatabaseTargetStrategy,
 ): ColumnDesign {
   return {
     name: foreignKey,
     field: camelCase(foreignKey),
-    sqlType: 'CHAR(36)',
-    prismaType: 'String',
-    prismaNativeType: '@db.Char(36)',
+    sqlType: target.uuid.sqlType,
+    prismaType: target.uuid.prismaType,
+    ...(target.uuid.prismaNativeType ? { prismaNativeType: target.uuid.prismaNativeType } : {}),
     nullable,
     primaryKey: false,
     unique: false,
-    references: { table: parent, column: 'id', onDelete },
+    references: { table: parent, column: 'id', onDelete, onUpdate: target.foreignKeys.defaultUpdateAction },
     format: 'uuid',
     description: `Foreign key referencing ${parent}.`,
   };
 }
 
-function auditColumns(): ColumnDesign[] {
+function auditColumns(target: DatabaseTargetStrategy): ColumnDesign[] {
   return [
     {
       name: 'created_at',
       field: 'createdAt',
-      sqlType: 'DATETIME',
-      prismaType: 'DateTime',
+      sqlType: target.timestamps.sqlType,
+      prismaType: target.timestamps.prismaType,
+      ...(target.timestamps.prismaNativeType ? { prismaNativeType: target.timestamps.prismaNativeType } : {}),
       nullable: false,
       primaryKey: false,
       unique: false,
-      defaultExpression: 'now()',
+      defaultExpression: target.timestamps.createdDefaultExpression,
       description: 'Row creation timestamp.',
     },
     {
       name: 'updated_at',
       field: 'updatedAt',
-      sqlType: 'DATETIME',
-      prismaType: 'DateTime',
+      sqlType: target.timestamps.sqlType,
+      prismaType: target.timestamps.prismaType,
+      ...(target.timestamps.prismaNativeType ? { prismaNativeType: target.timestamps.prismaNativeType } : {}),
       nullable: false,
       primaryKey: false,
       unique: false,
       onUpdateNow: true,
+      ...(target.timestamps.updatedDefaultExpression ? { defaultExpression: target.timestamps.updatedDefaultExpression } : {}),
       description: 'Last modification timestamp (auto-updated).',
     },
     {
       name: 'deleted_at',
       field: 'deletedAt',
-      sqlType: 'DATETIME',
-      prismaType: 'DateTime',
+      sqlType: target.timestamps.sqlType,
+      prismaType: target.timestamps.prismaType,
+      ...(target.timestamps.prismaNativeType ? { prismaNativeType: target.timestamps.prismaNativeType } : {}),
       nullable: true,
       primaryKey: false,
       unique: false,
@@ -136,8 +142,8 @@ export interface DesignedTable {
   enums: PrismaEnumDesign[];
 }
 
-export function designTable(entity: EntityPlan, context: InferenceContext = {}): DesignedTable {
-  const columns: ColumnDesign[] = [primaryKeyColumn()];
+export function designTable(entity: EntityPlan, context: InferenceContext): DesignedTable {
+  const columns: ColumnDesign[] = [primaryKeyColumn(context.target)];
   const enums: PrismaEnumDesign[] = [];
   const foreignKeys = resolveForeignKeys(entity);
   const fkNames = new Set(foreignKeys.map((fk) => fk.foreignKey));
@@ -159,16 +165,16 @@ export function designTable(entity: EntityPlan, context: InferenceContext = {}):
     const column = inferColumn(entity.name, parsed, context);
     columns.push(column);
     if (column.enumValues) {
-      enums.push({ name: column.prismaType, values: column.enumValues });
+      enums.push({ name: column.prismaType, values: column.enumValues, ...(column.enumDatabaseType ? { databaseName: column.enumDatabaseType } : {}) });
     }
   }
 
   // Foreign-key columns.
   for (const fk of foreignKeys) {
-    columns.push(foreignKeyColumn(fk.foreignKey, fk.parent, fk.nullable, fk.onDelete));
+    columns.push(foreignKeyColumn(fk.foreignKey, fk.parent, fk.nullable, fk.onDelete, context.target));
   }
 
-  columns.push(...auditColumns());
+  columns.push(...auditColumns(context.target));
 
   const table: TableDesign = {
     entity: entity.name,
@@ -182,4 +188,3 @@ export function designTable(entity: EntityPlan, context: InferenceContext = {}):
 
   return { table, enums };
 }
-

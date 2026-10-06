@@ -5,6 +5,7 @@
  * team-size assumptions — not fixed strings.
  */
 import type { RequirementSpec } from '../../../shared/types/requirement.ts';
+import type { DatabaseTargetStrategy } from '../../../shared/types/design.ts';
 import type { ArchitectureDecision, ArchitectureDecisions } from '../architecture.types.ts';
 import { hasIntegration, REGULATED_TYPES } from './common.ts';
 
@@ -79,10 +80,10 @@ function backendArchitecture(_spec: RequirementSpec): ArchitectureDecision {
   };
 }
 
-function databaseChoice(spec: RequirementSpec): ArchitectureDecision {
+function databaseChoice(spec: RequirementSpec, target: DatabaseTargetStrategy): ArchitectureDecision {
   const regulated = REGULATED_TYPES.has(spec.projectType);
   return {
-    choice: 'MySQL 8 (via Prisma ORM)',
+    choice: `${target.engine} (via Prisma ORM)`,
     reasoning: [
       `${spec.database.length} entities with clear relationships (foreign keys, joins, transactional writes) are a relational workload.`,
       regulated
@@ -97,9 +98,9 @@ function databaseChoice(spec: RequirementSpec): ArchitectureDecision {
           'The entity graph is relational; document modeling would either duplicate data or reimplement joins in application code.',
       },
       {
-        option: 'PostgreSQL',
+        option: target.dialect === 'postgresql' ? 'MySQL 8' : 'PostgreSQL',
         rejectedBecause:
-          'Equally capable; MySQL is the platform standard and nothing in this spec (no JSONB-heavy or GIS workload) forces a switch.',
+          `${target.engine} is the explicit generation target; changing engines requires selecting and validating a different target profile before design.`,
       },
     ],
   };
@@ -134,13 +135,12 @@ function authenticationChoice(spec: RequirementSpec): ArchitectureDecision {
   };
 }
 
-export function decideTechnology(spec: RequirementSpec): ArchitectureDecisions {
+export function decideTechnology(spec: RequirementSpec, target: DatabaseTargetStrategy): ArchitectureDecisions {
   return {
     architecture: architectureStyle(spec),
     frontendArchitecture: frontendArchitecture(spec),
     backendArchitecture: backendArchitecture(spec),
-    database: databaseChoice(spec),
+    database: databaseChoice(spec, target),
     authentication: authenticationChoice(spec),
   };
 }
-

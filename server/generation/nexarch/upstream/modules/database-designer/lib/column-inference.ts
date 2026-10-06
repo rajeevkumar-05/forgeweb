@@ -5,8 +5,8 @@
  * on enum resolution and the `(unique)` markers carried over from the
  * architecture plan's key-field hints.
  */
-import { camelCase } from '../../../shared/utils/strings.ts';
-import type { ColumnDesign } from '../database-designer.types.ts';
+import { camelCase, snakeCase } from '../../../shared/utils/strings.ts';
+import type { ColumnDesign, DatabaseTargetStrategy } from '../database-designer.types.ts';
 import { DEFAULT_COLUMN_SPEC, ENUM_COLUMNS, ENUM_VALUES, INFERENCE_RULES } from './knowledge.ts';
 
 /** A key-field hint from the architecture plan, e.g. `email (unique)`. */
@@ -20,6 +20,7 @@ export interface ParsedField {
  * status. */
 export interface InferenceContext {
   roleEnumValues?: string[];
+  target: DatabaseTargetStrategy;
 }
 
 /** Split `sku (unique)` → { name: 'sku', unique: true }. */
@@ -40,7 +41,7 @@ function humanize(column: string): string {
 export function inferColumn(
   entity: string,
   field: ParsedField,
-  context: InferenceContext = {},
+  context: InferenceContext,
 ): ColumnDesign {
   const { name, unique } = field;
 
@@ -58,29 +59,34 @@ export function inferColumn(
     // New users default to the least-privileged role (last in the list).
     const firstValue =
       (roleValues ? values[values.length - 1] : values[0]) ?? values[0] ?? 'ACTIVE';
+    const databaseType = context.target.enum.representation === 'named-native'
+      ? snakeCase(enumName)
+      : undefined;
     return {
       name,
       field: camelCase(name),
-      sqlType: `ENUM(${values.map((v) => `'${v}'`).join(', ')})`,
+      sqlType: databaseType ?? `ENUM(${values.map((v) => `'${v}'`).join(', ')})`,
       prismaType: enumName,
       nullable: false,
       primaryKey: false,
       unique,
-      defaultExpression: firstValue,
+      defaultExpression: `'${firstValue}'`,
       enumValues: values,
+      ...(databaseType ? { enumDatabaseType: databaseType } : {}),
       description: `${humanize(name)} of the ${entity} record.`,
     };
   }
 
   const rule = INFERENCE_RULES.find((candidate) => candidate.match(name));
   const spec = rule?.spec ?? DEFAULT_COLUMN_SPEC;
+  const targetType = context.target.scalarTypes[spec.kind];
 
   return {
     name,
     field: camelCase(name),
-    sqlType: spec.sqlType,
-    prismaType: spec.prismaType,
-    ...(spec.prismaNativeType ? { prismaNativeType: spec.prismaNativeType } : {}),
+    sqlType: targetType.sqlType,
+    prismaType: targetType.prismaType,
+    ...(targetType.prismaNativeType ? { prismaNativeType: targetType.prismaNativeType } : {}),
     nullable: false,
     primaryKey: false,
     unique,
@@ -91,4 +97,3 @@ export function inferColumn(
       : `${humanize(name)} of the ${entity} record.`,
   };
 }
-

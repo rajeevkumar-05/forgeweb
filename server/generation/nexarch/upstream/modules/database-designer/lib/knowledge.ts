@@ -8,10 +8,10 @@
  * never a code change in the designer.
  */
 
+import type { DatabaseScalarKind } from '../../../shared/types/design.ts';
+
 export interface ColumnTypeSpec {
-  sqlType: string;
-  prismaType: string;
-  prismaNativeType?: string;
+  kind: DatabaseScalarKind;
   /** Semantic format for validation/OpenAPI, e.g. `email`, `uuid`, `date-time`. */
   format?: string;
   /** Non-negative numeric guard (money, quantities). */
@@ -43,31 +43,25 @@ export const INFERENCE_RULES: readonly InferenceRule[] = [
   {
     match: exact('email'),
     spec: {
-      sqlType: 'VARCHAR(320)',
-      prismaType: 'String',
-      prismaNativeType: '@db.VarChar(320)',
+      kind: 'string320',
       format: 'email',
     },
   },
   {
     match: exact('password_hash', 'password'),
-    spec: { sqlType: 'VARCHAR(255)', prismaType: 'String', prismaNativeType: '@db.VarChar(255)' },
+    spec: { kind: 'string255' },
   },
   {
     match: exact('slug'),
     spec: {
-      sqlType: 'VARCHAR(191)',
-      prismaType: 'String',
-      prismaNativeType: '@db.VarChar(191)',
+      kind: 'string191',
       format: 'slug',
     },
   },
   {
     match: contains('phone', 'mobile', 'whatsapp'),
     spec: {
-      sqlType: 'VARCHAR(32)',
-      prismaType: 'String',
-      prismaNativeType: '@db.VarChar(32)',
+      kind: 'string32',
       format: 'phone',
     },
   },
@@ -88,9 +82,7 @@ export const INFERENCE_RULES: readonly InferenceRule[] = [
       'budget',
     ),
     spec: {
-      sqlType: 'DECIMAL(12,2)',
-      prismaType: 'Decimal',
-      prismaNativeType: '@db.Decimal(12, 2)',
+      kind: 'decimal12_2',
       nonNegative: true,
     },
   },
@@ -109,11 +101,11 @@ export const INFERENCE_RULES: readonly InferenceRule[] = [
       'reorder_level',
       'threshold',
     ),
-    spec: { sqlType: 'INT', prismaType: 'Int', nonNegative: true },
+    spec: { kind: 'integer', nonNegative: true },
   },
   {
     match: (c) => c.startsWith('is_') || c.startsWith('has_'),
-    spec: { sqlType: 'BOOLEAN', prismaType: 'Boolean' },
+    spec: { kind: 'boolean' },
   },
   {
     match: exact(
@@ -127,7 +119,7 @@ export const INFERENCE_RULES: readonly InferenceRule[] = [
       'featured',
       'archived',
     ),
-    spec: { sqlType: 'BOOLEAN', prismaType: 'Boolean' },
+    spec: { kind: 'boolean' },
   },
   {
     match: exact(
@@ -142,9 +134,9 @@ export const INFERENCE_RULES: readonly InferenceRule[] = [
       'expires_at',
       'verified_at',
     ),
-    spec: { sqlType: 'DATETIME', prismaType: 'DateTime' },
+    spec: { kind: 'timestamp' },
   },
-  { match: suffix('_at'), spec: { sqlType: 'DATETIME', prismaType: 'DateTime' } },
+  { match: suffix('_at'), spec: { kind: 'timestamp' } },
   {
     match: exact(
       'dob',
@@ -156,11 +148,11 @@ export const INFERENCE_RULES: readonly InferenceRule[] = [
       'issue_date',
       'joining_date',
     ),
-    spec: { sqlType: 'DATE', prismaType: 'DateTime', prismaNativeType: '@db.Date', format: 'date' },
+    spec: { kind: 'date', format: 'date' },
   },
   {
     match: suffix('_date'),
-    spec: { sqlType: 'DATE', prismaType: 'DateTime', prismaNativeType: '@db.Date', format: 'date' },
+    spec: { kind: 'date', format: 'date' },
   },
   {
     match: contains(
@@ -177,7 +169,7 @@ export const INFERENCE_RULES: readonly InferenceRule[] = [
       'summary',
       'about',
     ),
-    spec: { sqlType: 'TEXT', prismaType: 'String', prismaNativeType: '@db.Text' },
+    spec: { kind: 'text' },
   },
   {
     match: contains(
@@ -191,11 +183,11 @@ export const INFERENCE_RULES: readonly InferenceRule[] = [
       'provider_ref',
       'transaction_ref',
     ),
-    spec: { sqlType: 'VARCHAR(64)', prismaType: 'String', prismaNativeType: '@db.VarChar(64)' },
+    spec: { kind: 'string64' },
   },
   {
     match: exact('number', 'no', 'code', 'ref'),
-    spec: { sqlType: 'VARCHAR(64)', prismaType: 'String', prismaNativeType: '@db.VarChar(64)' },
+    spec: { kind: 'string64' },
   },
   {
     match: contains(
@@ -210,27 +202,23 @@ export const INFERENCE_RULES: readonly InferenceRule[] = [
       'document',
     ),
     spec: {
-      sqlType: 'VARCHAR(512)',
-      prismaType: 'String',
-      prismaNativeType: '@db.VarChar(512)',
+      kind: 'string512',
       format: 'uri',
     },
   },
   {
     match: contains('metadata', 'settings', 'preferences', 'config', 'payload', 'options'),
-    spec: { sqlType: 'JSON', prismaType: 'Json' },
+    spec: { kind: 'json' },
   },
   {
     match: contains('name', 'title', 'subject', 'label', 'designation'),
-    spec: { sqlType: 'VARCHAR(255)', prismaType: 'String', prismaNativeType: '@db.VarChar(255)' },
+    spec: { kind: 'string255' },
   },
 ];
 
 /** Fallback when nothing matches. */
 export const DEFAULT_COLUMN_SPEC: ColumnTypeSpec = {
-  sqlType: 'VARCHAR(255)',
-  prismaType: 'String',
-  prismaNativeType: '@db.VarChar(255)',
+  kind: 'string255',
 };
 
 /** Column names that carry an enumerable state — always emitted as enums. */
@@ -305,4 +293,3 @@ export const PARTITION_CANDIDATE_ENTITIES: ReadonlySet<string> = new Set([
   'Activities',
   'Submissions',
 ]);
-

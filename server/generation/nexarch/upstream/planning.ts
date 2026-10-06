@@ -2,7 +2,7 @@
 // provider configuration, schema emitters, or persistence enter this module.
 import type { RequirementSpec } from "./shared/types/requirement.ts";
 import type { ArchitecturePlan } from "./shared/types/architecture.ts";
-import type { DatabaseDesign, PrismaEnumDesign } from "./shared/types/design.ts";
+import type { DatabaseDesign, DatabaseTargetStrategy, PrismaEnumDesign } from "./shared/types/design.ts";
 import type { AnalysisResult, DetectionSummary } from "./modules/analysis/analysis.types.ts";
 import { normalize } from "./modules/analysis/lib/normalize.ts";
 import { detectIntent } from "./modules/analysis/lib/intent-detector.ts";
@@ -37,31 +37,34 @@ export function analyzeRequirements(prompt: string): AnalysisResult {
   return { status: "COMPLETE", spec: buildSpec(prompt, normalized, intent.profile, features), detection };
 }
 
-export function planArchitecture(spec: RequirementSpec): { plan: ArchitecturePlan; markdown: string } {
+export function planArchitecture(spec: RequirementSpec, target: DatabaseTargetStrategy): { plan: ArchitecturePlan; markdown: string } {
   const plan: ArchitecturePlan = {
     meta: { projectName: spec.projectName, projectType: spec.projectType, generatedAt: new Date().toISOString(), planner: "nexarch-architecture-planner/1.0" },
-    decisions: decideTechnology(spec),
+    decisions: decideTechnology(spec, target),
     folderStructure: planFolders(spec),
     apiModules: planApi(spec),
     frontend: planFrontend(spec),
-    database: planDatabase(spec),
+    database: planDatabase(spec, target),
     services: planBackendModules(spec),
     middleware: planMiddleware(spec),
     security: planSecurity(spec),
     dependencyGraph: planDependencies(spec),
-    futureScalability: planScalability(spec),
+    futureScalability: planScalability(spec, target),
     nonFunctional: scoreNonFunctionals(spec),
   };
   // Preserve the planner's auth design. Its upstream global default strips it.
   return { plan, markdown: exportMarkdown(plan) };
 }
 
-export function designDatabase(architecture: ArchitecturePlan, requirements: RequirementSpec): DatabaseDesign {
+export function designDatabase(architecture: ArchitecturePlan, requirements: RequirementSpec, target: DatabaseTargetStrategy): DatabaseDesign {
+  if (architecture.database.engine !== target.engine) {
+    throw new TypeError(`Database architecture ${architecture.database.engine} does not match target ${target.engine}`);
+  }
   const roleEnumValues = requirements.roles.map((role) => role.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, ""));
   const tables = [];
   const enumMap = new Map<string, PrismaEnumDesign>();
   for (const entity of architecture.database.entities) {
-    const designed = designTable(entity, { roleEnumValues });
+    const designed = designTable(entity, { roleEnumValues, target });
     tables.push(designed.table);
     for (const item of designed.enums) if (!enumMap.has(item.name)) enumMap.set(item.name, item);
   }
@@ -70,14 +73,18 @@ export function designDatabase(architecture: ArchitecturePlan, requirements: Req
       projectName: architecture.meta.projectName,
       projectType: architecture.meta.projectType,
       engine: architecture.database.engine,
-      databaseVersion: "MySQL 8.0",
+      databaseVersion: target.version,
       normalForm: "Third Normal Form (3NF)",
       generatedAt: new Date().toISOString(),
       generator: "nexarch-database-designer/1.0",
     },
+    target,
     enums: [...enumMap.values()],
     tables,
-    relationships: buildRelationships(architecture.database.entities),
+    relationships: buildRelationships(architecture.database.entities).map((relationship) => ({
+      ...relationship,
+      onUpdate: target.foreignKeys.defaultUpdateAction,
+    })),
     optimization: { indexes: [], cachingCandidates: [], partitioningCandidates: [], queryGuidelines: [] },
   };
   design.optimization = planOptimization(design);

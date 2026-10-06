@@ -140,7 +140,7 @@ export function exportMarkdown(plan: ArchitecturePlan): string {
   push('## 9. Deployment Overview');
   push();
   push(
-    '- Dockerized services (multi-stage builds, non-root runtime) composed with MySQL behind nginx.',
+    `- Dockerized services (multi-stage builds, non-root runtime) composed with ${plan.database.engine} behind nginx.`,
   );
   push('- nginx serves the static client and proxies `/api` — single origin, no production CORS.');
   push(
@@ -171,4 +171,3 @@ export function exportMarkdown(plan: ArchitecturePlan): string {
 
   return lines.join('\n');
 }
-

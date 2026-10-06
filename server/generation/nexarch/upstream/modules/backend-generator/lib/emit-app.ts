@@ -1,0 +1,220 @@
+// Adapted from NexArch commit 398f4cbd9e314954eda95540411ed4d06cd50cf3; used with the original author's permission.
+/**
+ * Emits the generated project's application wiring: the module router
+ * registry, `app.ts` (middleware pipeline), `index.ts` (process lifecycle),
+ * and a Swagger UI mount that serves the OpenAPI contract from Phase 4
+ * verbatim — documentation and implementation can never drift because they
+ * share one source document.
+ */
+import { camelCase } from '../../../shared/utils/strings.ts';
+import type { GeneratedFile } from '../backend-generator.types.ts';
+import { file } from './file-tree.ts';
+import type { ProjectModel } from './project-model.ts';
+
+function emitRoutesIndex(project: ProjectModel): GeneratedFile {
+  const imports = project.modules
+    .map(
+      (m) =>
+        `import { ${camelCase(m.name)}Router } from './modules/${m.name}/routes/${m.name}.routes.js';`,
+    )
+    .join('\n');
+  const mounts = project.modules
+    .map((m) => `  router.use('${m.basePath}', ${camelCase(m.name)}Router);`)
+    .join('\n');
+
+  return file(
+    'src/routes.ts',
+    'typescript',
+    `import { Router } from 'express';
+
+${imports}
+
+/** Mounts every generated feature module under the API prefix. */
+export function buildApiRouter(): Router {
+  const router = Router();
+
+${mounts}
+
+  return router;
+}
+`,
+  );
+}
+
+function emitApp(project: ProjectModel): GeneratedFile {
+  return file(
+    'src/app.ts',
+    'typescript',
+    `import compression from 'compression';
+import cors from 'cors';
+import express from 'express';
+import type { Express } from 'express';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import swaggerUi from 'swagger-ui-express';
+
+import { config } from './shared/config/index.js';
+import { prisma } from './shared/database/prisma.js';
+import { errorHandler, notFoundHandler } from './shared/middleware/error-handler.js';
+import { requestContext } from './shared/middleware/request-context.js';
+import { requestLogger } from './shared/middleware/request-logger.js';
+import { buildApiRouter } from './routes.js';
+import { openApiDocument } from './docs/openapi.js';
+
+/**
+ * ${project.projectName} API — assembled here, listened on in index.ts.
+ * Pipeline order: context → security → parsing → logging → rate limit →
+ * docs → modules → 404 → errors.
+ */
+export function createApp(): Express {
+  const app = express();
+  app.disable('x-powered-by');
+  app.set('trust proxy', 1);
+
+  app.use(requestContext);
+  app.use(helmet());
+  app.use(
+    cors({
+      origin: config.cors.origins.includes('*') ? true : config.cors.origins,
+      credentials: true,
+    }),
+  );
+  app.use(compression());
+  app.use(express.json({ limit: config.server.bodyLimit }));
+  app.use(express.urlencoded({ extended: false, limit: config.server.bodyLimit }));
+  app.use(requestLogger);
+
+  app.use(
+    rateLimit({
+      windowMs: 60_000,
+      limit: 100,
+      standardHeaders: 'draft-7',
+      legacyHeaders: false,
+    }),
+  );
+
+  // Health answers 200 even when the database is down — a listening,
+  // degraded API is observable; a 503 would be indistinguishable from
+  // "not started yet" to naive probes. The payload carries the truth.
+  app.get(config.server.apiPrefix + '/health', async (_req, res) => {
+    let database = 'up';
+    try {
+      await prisma.$queryRaw\`SELECT 1\`;
+    } catch {
+      database = 'down';
+    }
+    res.json({
+      success: true,
+      message: 'OK',
+      data: { status: database === 'up' ? 'ok' : 'degraded', checks: { database } },
+      meta: {},
+    });
+  });
+
+  app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiDocument));
+  app.use(config.server.apiPrefix, buildApiRouter());
+
+  app.use(notFoundHandler);
+  app.use(errorHandler);
+
+  return app;
+}
+`,
+  );
+}
+
+function emitIndex(databaseEngine: string): GeneratedFile {
+  return file(
+    'src/index.ts',
+    'typescript',
+    `import http from 'node:http';
+
+import { createApp } from './app.js';
+import { config } from './shared/config/index.js';
+import { connectDatabase, disconnectDatabase } from './shared/database/prisma.js';
+import { logger } from './shared/logger/index.js';
+
+async function bootstrap(): Promise<void> {
+  try {
+    await connectDatabase();
+  } catch (error) {
+    // A missing database must never leave the process hanging without a
+    // socket: in development the API boots in degraded mode (/health
+    // reports the database as down); in production it refuses to start.
+    if (config.isProduction) {
+      logger.error('database unreachable at boot — refusing to start', { error });
+      process.exit(1);
+    }
+    logger.warn('database unreachable — continuing in degraded mode', {
+      hint: 'point DATABASE_URL at a running ${databaseEngine} instance and restart',
+    });
+  }
+
+  const app = createApp();
+  const server = http.createServer(app);
+
+  server.once('error', (error: NodeJS.ErrnoException) => {
+    // Without this, a bind failure surfaces as an anonymous uncaught
+    // exception; EADDRINUSE deserves a sentence, not a stack trace.
+    if (error.code === 'EADDRINUSE') {
+      logger.error('port ' + config.server.port + ' is already in use — set PORT to a free one');
+    } else {
+      logger.error('failed to start the HTTP server', { error });
+    }
+    process.exit(1);
+  });
+
+  server.listen(config.server.port, () => {
+    logger.info('API listening on port ' + config.server.port, { environment: config.env });
+  });
+
+  let shuttingDown = false;
+  const shutdown = (signal: string): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info(signal + ' received — shutting down');
+    server.close(() => {
+      void disconnectDatabase().finally(() => {
+        process.exit(0);
+      });
+    });
+  };
+
+  process.on('SIGTERM', () => {
+    shutdown('SIGTERM');
+  });
+  process.on('SIGINT', () => {
+    shutdown('SIGINT');
+  });
+  process.on('unhandledRejection', (reason: unknown) => {
+    logger.error('unhandled promise rejection', { reason });
+  });
+  process.on('uncaughtException', (error: Error) => {
+    logger.error('uncaught exception — terminating', { error });
+    process.exit(1);
+  });
+}
+
+void bootstrap();
+`,
+  );
+}
+
+function emitOpenApiDoc(openapiJson: string): GeneratedFile {
+  return file(
+    'src/docs/openapi.ts',
+    'typescript',
+    `/**
+ * The OpenAPI 3.1 contract generated by the Database Designer (Phase 4),
+ * embedded verbatim and served at /docs via Swagger UI — the API's
+ * documentation and its implementation are generated from the same
+ * source, so they cannot drift.
+ */
+export const openApiDocument: Record<string, unknown> = ${openapiJson};
+`,
+  );
+}
+
+export function emitAppWiring(project: ProjectModel, openapiJson: string, databaseEngine: string): GeneratedFile[] {
+  return [emitRoutesIndex(project), emitApp(project), emitIndex(databaseEngine), emitOpenApiDoc(openapiJson)];
+}

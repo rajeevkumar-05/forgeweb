@@ -96,8 +96,15 @@ export function prepareCandidate(candidate: CandidateArtifacts, request: Generat
   requireContract(candidate.files.length <= request.options.maxFiles, "candidate exceeds file budget");
   checkFiles(candidate.files);
   const requirementIds = new Set(request.approved.specification.requirements.map((requirement) => requirement.id));
+  const assembledTraceability = (candidate as CandidateArtifacts & {
+    readonly assembly?: { readonly traceability?: { readonly untracedFiles?: readonly { readonly path: string; readonly reason: string }[] } };
+  }).assembly?.traceability;
+  const explicitlyUntraced = new Set((assembledTraceability?.untracedFiles ?? [])
+    .filter((entry) => entry.reason === "shared-infrastructure")
+    .map((entry) => entry.path.toLowerCase()));
   for (const file of candidate.files) {
-    requireContract(file.requirementIds.length > 0 && file.requirementIds.every((id) => requirementIds.has(id)), `file requirement mapping is invalid: ${file.path}`);
+    requireContract((file.requirementIds.length > 0 || explicitlyUntraced.has(file.path.toLowerCase()))
+      && file.requirementIds.every((id) => requirementIds.has(id)), `file requirement mapping is invalid: ${file.path}`);
   }
   for (const artifact of candidate.artifacts) {
     requireContract(artifact.digest === digest(artifact.content), `artifact digest mismatch: ${artifact.kind}`);
@@ -114,7 +121,7 @@ export function prepareValidation(validation: CandidateValidation, candidate: Ca
   const ids = new Set<string>();
   for (const check of validation.checks) {
     requireContract(Boolean(check.id && check.evidence), "validation check needs identity and evidence");
-    requireContract(["passed", "failed", "skipped", "blocked"].includes(check.status), "validation status is invalid");
+    requireContract(["passed", "failed", "unavailable", "skipped", "blocked"].includes(check.status), "validation status is invalid");
     requireContract(!ids.has(check.id), "duplicate validation check");
     ids.add(check.id);
   }

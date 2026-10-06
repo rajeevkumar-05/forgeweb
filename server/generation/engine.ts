@@ -64,6 +64,7 @@ export type EngineFailure = {
   readonly message: string;
   readonly retryable: boolean;
   readonly stage: string;
+  readonly diagnostics?: readonly { readonly code: string; readonly message: string; readonly path?: string }[];
 };
 
 export type EngineResult<Value> =
@@ -96,7 +97,14 @@ export type PlanningFolder = { readonly name: string; readonly type: "directory"
 export type ArchitectureDraft = {
   readonly context?: { readonly projectId: string; readonly buildId: string; readonly operationId: string; readonly subjectId: string; readonly ownerId: string | null; readonly promptDigest: string };
   readonly projection: DeepReadonly<ArchitecturePlan>;
-  readonly endpoints: readonly { readonly method: string; readonly path: string; readonly requirementIds: readonly string[] }[];
+  readonly endpoints: readonly {
+    readonly method: string;
+    readonly path: string;
+    readonly description?: string;
+    readonly auth?: boolean;
+    readonly roles?: readonly string[];
+    readonly requirementIds: readonly string[];
+  }[];
   readonly structure?: {
     readonly folders: readonly PlanningFolder[];
     readonly pages: readonly { readonly name: string; readonly route: string; readonly access: readonly string[] }[];
@@ -108,18 +116,38 @@ export type ArchitectureDraft = {
   };
 };
 
+export type DatabaseReferentialAction = "CASCADE" | "RESTRICT" | "SET NULL" | "NO ACTION";
+
+export type DatabaseTargetContract = {
+  readonly dialect: "mysql8" | "postgresql";
+  readonly profile: string;
+  readonly provider: "mysql" | "postgresql";
+  readonly connection: { readonly envVar: "DATABASE_URL"; readonly placeholder: string };
+  readonly supportedScalarTypes: readonly string[];
+  readonly enum: { readonly representation: "inline-native" | "named-native"; readonly identifierStyle: "inline" | "snake_case" };
+  readonly uuid: { readonly sqlType: string; readonly sqlDefaultExpression: string; readonly prismaDefaultExpression: string };
+  readonly timestamps: { readonly sqlType: string; readonly createdDefaultExpression: string; readonly updatedDefaultExpression?: string; readonly updateBehavior: "prisma-updated-at" };
+  readonly defaults: { readonly currentTimestamp: string; readonly booleanTrue: string; readonly booleanFalse: string };
+  readonly foreignKeys: { readonly supportedDeleteActions: readonly DatabaseReferentialAction[]; readonly supportedUpdateActions: readonly DatabaseReferentialAction[]; readonly defaultUpdateAction: DatabaseReferentialAction };
+  readonly indexes: { readonly foreignKeys: "explicit"; readonly uniqueness: "unique-index"; readonly partialIndexes: boolean };
+  readonly identifiers: { readonly quote: "`" | "\""; readonly maxLength: number; readonly unquotedCase: "preserve" | "lowercase"; readonly overflow: "reject" };
+  readonly migration: { readonly tool: "prisma-migrate"; readonly strategy: "versioned"; readonly destructiveReset: false };
+  readonly prisma: { readonly provider: "mysql" | "postgresql"; readonly datasourceName: "db"; readonly urlExpression: 'env("DATABASE_URL")'; readonly datasource: string };
+};
+
 export type DatabaseDesign = {
-  readonly dialect: string;
+  readonly dialect: "MySQL 8" | "PostgreSQL";
+  readonly target: DatabaseTargetContract;
   readonly entities: readonly {
     readonly name: string;
     readonly tableName?: string;
     readonly primaryKey?: string;
-    readonly fields: readonly { readonly name: string; readonly type: string; readonly nullable: boolean; readonly primaryKey?: boolean; readonly unique?: boolean; readonly defaultExpression?: string; readonly references?: { readonly table: string; readonly column: string; readonly onDelete: string }; readonly enumValues?: readonly string[]; readonly nonNegative?: boolean; readonly format?: string; readonly description?: string }[];
+    readonly fields: readonly { readonly name: string; readonly type: string; readonly prismaType?: string; readonly prismaNativeType?: string; readonly nullable: boolean; readonly primaryKey?: boolean; readonly unique?: boolean; readonly defaultExpression?: string; readonly onUpdateNow?: boolean; readonly references?: { readonly table: string; readonly column: string; readonly onDelete: string; readonly onUpdate: string }; readonly enumValues?: readonly string[]; readonly enumDatabaseType?: string; readonly nonNegative?: boolean; readonly format?: string; readonly description?: string }[];
     readonly indexes?: readonly { readonly name: string; readonly columns: readonly string[]; readonly unique: boolean }[];
     readonly softDelete?: boolean;
   }[];
-  readonly relationships: readonly { readonly from: string; readonly to: string; readonly kind: string; readonly foreignKey?: string; readonly onDelete?: string }[];
-  readonly metadata?: { readonly version: string; readonly normalForm: string; readonly enums: readonly { readonly name: string; readonly values: readonly string[] }[] };
+  readonly relationships: readonly { readonly from: string; readonly to: string; readonly kind: string; readonly foreignKey?: string; readonly onDelete?: string; readonly onUpdate?: string }[];
+  readonly metadata?: { readonly version: string; readonly normalForm: string; readonly enums: readonly { readonly name: string; readonly values: readonly string[]; readonly databaseName?: string }[] };
 };
 
 export type PlanningRequest = {
@@ -207,7 +235,7 @@ export type CandidateValidation = {
   readonly candidateId: string;
   readonly checks: readonly {
     readonly id: string;
-    readonly status: "passed" | "failed" | "skipped" | "blocked";
+    readonly status: "passed" | "failed" | "unavailable" | "skipped" | "blocked";
     readonly required: boolean;
     readonly evidence: string;
     readonly subjectPaths: readonly string[];

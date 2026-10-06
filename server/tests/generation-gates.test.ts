@@ -8,7 +8,7 @@ import { BuildWorkflow } from "../workflow.ts";
 import { ProjectWorkspaceService } from "../project-workspace.ts";
 import { digest } from "../lib.ts";
 import { PlanningApprovalService } from "../generation/approval.ts";
-import { APPLICATION_TARGET, requireApplicationTarget } from "../generation/targets.ts";
+import { APPLICATION_TARGET, databaseTargetContract, requireApplicationTarget } from "../generation/targets.ts";
 import { planPrompt } from "../generation/planning.ts";
 import type { PlanningSpecification } from "../generation/planning.ts";
 import type { CandidateArtifacts, EngineActor, EngineMetadata, GenerationRequest, PlanningRequest } from "../generation/engine.ts";
@@ -33,7 +33,7 @@ function proposal(): PlanningSpecification {
       backend: { runtime: "Node", modules: ["Tasks"], apiStyle: "REST", jobs: [] }, data: { database: "PostgreSQL", entities: ["Task"], rules: [] },
       security: ["Authenticated access"], delivery: [], diagram: "", markdown: "Task plan", capabilities: [],
     } },
-    database: { dialect: "PostgreSQL", entities: [{ name: "Task", fields: [{ name: "id", type: "uuid", nullable: false }] }], relationships: [] },
+    database: { dialect: "PostgreSQL", target: databaseTargetContract(APPLICATION_TARGET), entities: [{ name: "Task", fields: [{ name: "id", type: "UUID", nullable: false, defaultExpression: "gen_random_uuid()" }] }], relationships: [] },
   };
 }
 
@@ -50,6 +50,7 @@ async function fixture() {
 }
 
 test("canonical PostgreSQL target rejects missing and mismatched dialects before approval", async () => {
+  assert.doesNotThrow(() => requireApplicationTarget(proposal()));
   for (const dialect of [undefined, "mysql8"]) {
     const plan = proposal();
     Reflect.set(plan, "databaseDialect", dialect);
@@ -58,6 +59,13 @@ test("canonical PostgreSQL target rejects missing and mismatched dialects before
   const plan = proposal();
   Reflect.set(plan.database!, "dialect", "MySQL 8");
   assert.throws(() => requireApplicationTarget(plan), /UNSUPPORTED_DATABASE_TARGET/);
+  const relabeledMySql = proposal();
+  Reflect.set(relabeledMySql.database!.entities[0].fields[0], "type", "CHAR(36)");
+  Reflect.set(relabeledMySql.database!.entities[0].fields[0], "defaultExpression", "UUID()");
+  assert.throws(() => requireApplicationTarget(relabeledMySql), /UNSUPPORTED_DATABASE_TARGET/);
+  const mismatchedProvider = proposal();
+  Reflect.set(mismatchedProvider.database!.target, "provider", "mysql");
+  assert.throws(() => requireApplicationTarget(mismatchedProvider), /UNSUPPORTED_DATABASE_TARGET/);
   const result = await planPrompt({
     analyzeRequirements: async () => { throw new Error("must not run"); },
     planArchitecture: async () => { throw new Error("must not run"); },
@@ -175,7 +183,7 @@ test("candidate generation, isolated validation and acceptance remain separate",
     assert.equal(unavailable.ok, false);
     if (!unavailable.ok) assert.equal(unavailable.error.code, "unsupported_capability");
     const validation: IsolatedValidationResult = {
-      candidateId: candidate.id, manifestDigest: candidate.manifestDigest, execution: { kind: "isolated", sessionId: "fixture", imageDigest: "fixture-image" }, findings: [],
+      candidateId: candidate.id, manifestDigest: candidate.manifestDigest, execution: { kind: "isolated", sessionId: "fixture", imageDigest: "fixture-image", snapshotDigest: candidate.manifestDigest, policyDigest: "fixture-policy" }, findings: [],
       checks: REQUIRED_CHECKS.map((id) => ({ id, status: "passed", required: true, evidence: "Fixture evidence only", subjectPaths: [] })),
     };
     const review = { candidateId: candidate.id, manifestDigest: candidate.manifestDigest, passed: true };

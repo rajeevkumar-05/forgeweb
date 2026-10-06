@@ -6,6 +6,7 @@
  * Full column design belongs to the Database Designer stage.
  */
 import type { RequirementSpec } from '../../../shared/types/requirement.ts';
+import type { DatabaseTargetStrategy } from '../../../shared/types/design.ts';
 import { snakeCase } from '../../../shared/utils/strings.ts';
 import type { DatabasePlan, EntityPlan, EntityRelation } from '../architecture.types.ts';
 import { REGULATED_TYPES } from './common.ts';
@@ -147,7 +148,7 @@ function planEntity(entity: string, present: ReadonlySet<string>): EntityPlan {
   };
 }
 
-export function planDatabase(spec: RequirementSpec): DatabasePlan {
+export function planDatabase(spec: RequirementSpec, target: DatabaseTargetStrategy): DatabasePlan {
   const entityNames = spec.database.length > 0 ? spec.database : ['Users'];
   const present = new Set(entityNames);
   const entities = entityNames.map((entity) => planEntity(entity, present));
@@ -160,13 +161,14 @@ export function planDatabase(spec: RequirementSpec): DatabasePlan {
     hasJoinTables
       ? 'Many-to-many relationships resolve through explicit join tables (already present in the entity list) so line-level attributes have a home.'
       : 'Introduce join tables if any relationship becomes many-to-many; never store ID arrays in columns.',
-    'Enumerations (statuses, types) as native ENUM or lookup tables — never free text.',
+    target.enum.representation === 'named-native'
+      ? 'Enumerations (statuses, types) as named native enum types or lookup tables — never free text.'
+      : 'Enumerations (statuses, types) as inline native ENUM or lookup tables — never free text.',
     'No derived values stored except explicitly-cached aggregates (e.g. order totals), recomputed on write.',
     REGULATED_TYPES.has(spec.projectType)
       ? `${spec.projectType} domain: use soft deletes plus an append-only audit table for regulated records.`
       : 'Hard deletes are acceptable; add soft deletes only where recovery workflows demand them.',
   ];
 
-  return { engine: 'MySQL 8', entities, normalization };
+  return { engine: target.engine, entities, normalization };
 }
-

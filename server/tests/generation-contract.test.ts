@@ -3,6 +3,7 @@ import test from "node:test";
 import { baseReference, candidateManifestDigest, fileManifestDigest, prepareCandidate, prepareGenerationRequest, prepareValidation } from "../generation/contract.ts";
 import type { CandidateArtifacts, CandidateValidation, EngineFailureCode, EngineFile, EngineResult, GenerationRequest } from "../generation/engine.ts";
 import { digest } from "../lib.ts";
+import { APPLICATION_TARGET, databaseTargetContract } from "../generation/targets.ts";
 
 function requestWithBase(kind: "empty" | "version" = "version"): GenerationRequest {
   const files: EngineFile[] = kind === "empty" ? [] : [{ path: "README.md", content: "base", digest: digest("base"), requirementIds: ["REQ-001"] }];
@@ -36,7 +37,7 @@ function requestWithBase(kind: "empty" | "version" = "version"): GenerationReque
     ? { kind: "empty" as const, projectId: "project_1", manifestDigest: fileManifestDigest(files), files: [] as [] }
     : { kind: "version" as const, projectId: "project_1", versionId: "version_1", manifestDigest: fileManifestDigest(files), files };
 
-  const design = { architecture: { projection: structuredClone(specification.architecture), endpoints: [{ method: "GET", path: "/items", requirementIds: ["REQ-001"] }] }, database: { dialect: "PostgreSQL", entities: [], relationships: [] } };
+  const design = { architecture: { projection: structuredClone(specification.architecture), endpoints: [{ method: "GET", path: "/items", requirementIds: ["REQ-001"] }] }, database: { dialect: "PostgreSQL" as const, target: databaseTargetContract(APPLICATION_TARGET), entities: [], relationships: [] } };
   return {
     scope: { projectId: "project_1", buildId: "build_1", operationId: "operation_1", actor: { kind: "authenticated", subjectId: "user_1", ownerId: "user_1" } },
     base,

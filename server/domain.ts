@@ -1,5 +1,8 @@
 import type { PlanRecord } from "./generation/approval.ts";
+import type { AssembledCandidateArtifacts } from "./generation/candidate.ts";
+import type { EngineeringEvidenceGraph } from "./generation/engineering-graph.ts";
 import type { LayoutMetadata } from "./generation/layout.ts";
+import type { CandidateValidationReport } from "./generation/validation.ts";
 
 export type BuildStatus =
   | "queued"
@@ -122,6 +125,37 @@ export type ProjectVersion = {
   validationChecks: ValidationCheck[];
   llmMetadata?: LlmGenerationMetadata;
   createdAt: string;
+  candidateId?: string;
+  candidateDigest?: string;
+  candidateManifestDigest?: string;
+};
+
+export type GenerationCandidateStatus = "assembled" | "validation_unavailable" | "validation_failed" | "validated" | "accepted" | "rejected" | "quarantined" | "superseded";
+
+export type GenerationCandidateRecord = {
+  id: string;
+  projectId: string;
+  buildId: string;
+  ownerId: string;
+  subjectId: string;
+  status: GenerationCandidateStatus;
+  candidateDigest: string;
+  manifestDigest: string;
+  approvedPlanId: string;
+  bindingDigest: string;
+  specificationDigest: string;
+  planDigest: string;
+  baseVersionId?: string;
+  candidate: AssembledCandidateArtifacts;
+  validation?: CandidateValidationReport;
+  engineeringGraph?: EngineeringEvidenceGraph;
+  acceptedVersionId?: string;
+  supersededByCandidateId?: string;
+  failure?: { code: string; message: string };
+  createdAt: string;
+  updatedAt: string;
+  validatedAt?: string;
+  acceptedAt?: string;
 };
 
 export type GeneratedDatabaseInfo = {
@@ -239,7 +273,7 @@ export type Build = {
 
 export type ForgeDatabase = {
   planningRecords?: Record<string, PlanRecord>;
-  schemaVersion: 2;
+  schemaVersion: 3;
   projects: Record<string, Project>;
   specifications: Record<string, MasterSpecification>;
   builds: Record<string, Build>;
@@ -249,6 +283,7 @@ export type ForgeDatabase = {
   graphs: Record<string, GraphSnapshot>;
   versions: Record<string, ProjectVersion>;
   versionFiles: Record<string, GeneratedFile[]>;
+  generationCandidates: Record<string, GenerationCandidateRecord>;
 };
 
 export type BuildView = Build & {

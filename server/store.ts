@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import type { ForgeDatabase } from "./domain.ts";
 
 const emptyDatabase = (): ForgeDatabase => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
   planningRecords: {},
   projects: {},
   specifications: {},
@@ -14,6 +14,7 @@ const emptyDatabase = (): ForgeDatabase => ({
   graphs: {},
   versions: {},
   versionFiles: {},
+  generationCandidates: {},
 });
 
 export class JsonStore {
@@ -31,15 +32,16 @@ export class JsonStore {
       const content = await readFile(this.filePath, "utf8");
       const parsed = JSON.parse(content) as ForgeDatabase;
       const schemaVersion = (parsed as unknown as { schemaVersion: number }).schemaVersion;
-      if (![1, 2].includes(schemaVersion)) throw new Error(`Unsupported database schema ${schemaVersion}`);
+      if (![1, 2, 3].includes(schemaVersion)) throw new Error(`Unsupported database schema ${schemaVersion}`);
       this.database = {
         ...parsed,
-        schemaVersion: 2,
+        schemaVersion: 3,
         versions: parsed.versions ?? {},
         planningRecords: parsed.planningRecords ?? {},
         versionFiles: parsed.versionFiles ?? {},
+        generationCandidates: parsed.generationCandidates ?? {},
       };
-      if (schemaVersion === 1) await this.persist(this.database);
+      if (schemaVersion !== 3) await this.persist(this.database);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       this.database = emptyDatabase();

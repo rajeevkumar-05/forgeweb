@@ -4,10 +4,11 @@
  * one names the trigger at which the investment becomes worthwhile.
  */
 import type { RequirementSpec } from '../../../shared/types/requirement.ts';
+import type { DatabaseTargetStrategy } from '../../../shared/types/design.ts';
 import type { NonFunctionalReport, ScalabilityRecommendation } from '../architecture.types.ts';
 import { hasIntegration, hasModule, PUBLIC_FACING_TYPES, REGULATED_TYPES } from './common.ts';
 
-export function planScalability(spec: RequirementSpec): ScalabilityRecommendation[] {
+export function planScalability(spec: RequirementSpec, target: DatabaseTargetStrategy): ScalabilityRecommendation[] {
   const recommendations: ScalabilityRecommendation[] = [
     {
       concern: 'Deployment',
@@ -70,8 +71,9 @@ export function planScalability(spec: RequirementSpec): ScalabilityRecommendatio
   if (spec.database.length >= 8) {
     recommendations.push({
       concern: 'Search',
-      recommendation:
-        'MySQL FULLTEXT indexes now; dedicated search engine (OpenSearch/Meilisearch) later',
+      recommendation: target.dialect === 'postgresql'
+        ? 'PostgreSQL full-text search with tsvector and GIN indexes now; dedicated search engine (OpenSearch/Meilisearch) later'
+        : 'MySQL FULLTEXT indexes now; dedicated search engine (OpenSearch/Meilisearch) later',
       trigger: 'When list filtering over ~100k rows stops being instant',
     });
   }
@@ -118,4 +120,3 @@ export function scoreNonFunctionals(spec: RequirementSpec): NonFunctionalReport 
     },
   };
 }
-
