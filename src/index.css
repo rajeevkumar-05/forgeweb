@@ -860,6 +860,64 @@ button:disabled {
   word-break: break-word;
 }
 
+.hero-workflow-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.hero-workflow-switch {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.5rem;
+  padding: 0.18rem;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.hero-workflow-switch button {
+  display: inline-flex;
+  min-height: 1.9rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  border-radius: 0.35rem;
+  padding: 0.3rem 0.65rem;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 0.66rem;
+  font-weight: 650;
+}
+
+.hero-workflow-switch button.is-active {
+  color: #101412;
+  background: #dfff68;
+}
+
+.hero-workflow-switch svg {
+  width: 0.78rem;
+  height: 0.78rem;
+}
+
+.hero-activation-token {
+  min-width: 0;
+  width: min(15rem, 48%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.5rem;
+  padding: 0.48rem 0.65rem;
+  color: white;
+  outline: none;
+  background: rgba(255, 255, 255, 0.045);
+  font-size: 0.72rem;
+}
+
+.hero-activation-token:focus-visible,
+.hero-workflow-switch button:focus-visible {
+  outline: 2px solid #dfff68;
+  outline-offset: 2px;
+}
+
 .workspace-muted {
   display: flex;
   align-items: center;
@@ -1986,6 +2044,16 @@ button:disabled {
 
   .hero-chat-security {
     display: none;
+  }
+
+  .hero-workflow-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .hero-workflow-switch,
+  .hero-activation-token {
+    width: 100%;
   }
 
   .hero-chat-actions {

@@ -791,6 +791,9 @@ export class BuildWorkflow {
 
   async revise(buildId: string, notesValue: unknown): Promise<BuildView> {
     const current = this.get(buildId);
+    if (current.generationMode === "safe" || current.planningRecordId) {
+      throw new ApiError(409, "SAFE_REVISION_UNAVAILABLE", "Verified plans must be replaced through a new approved safe-generation request.");
+    }
     if (current.status !== "awaiting_confirmation" || !current.specification) {
       throw new ApiError(409, "INVALID_BUILD_STATE", "The specification can only be revised while it is awaiting confirmation.");
     }

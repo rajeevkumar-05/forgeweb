@@ -86,6 +86,7 @@ export type LlmStatus = {
 };
 
 export type BuildResponse = {
+  generationMode?: "legacy" | "safe";
   id: string;
   projectId: string;
   status: BuildStatus;
@@ -111,9 +112,19 @@ export type BuildResponse = {
 
 type ApiEnvelope = { build: BuildResponse };
 
+export type SafeGenerationStatus = {
+  enabled: boolean;
+  authenticated: boolean;
+  target: "forgeweb-postgresql-v1";
+  isolatedValidation: "configured" | "unavailable";
+  disposablePostgresql: "configured" | "unavailable";
+  trustedRuntime: "configured" | "unavailable";
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
+    credentials: "same-origin",
     headers: { "content-type": "application/json", ...init?.headers },
   });
   const payload = await response.json() as T & { error?: { message?: string } };
@@ -123,6 +134,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export async function createBuild(prompt: string): Promise<BuildResponse> {
   const payload = await request<ApiEnvelope>("/api/builds", { method: "POST", body: JSON.stringify({ prompt }) });
+  return payload.build;
+}
+
+export async function getSafeGenerationStatus(): Promise<SafeGenerationStatus> {
+  return request<SafeGenerationStatus>("/api/safe/status");
+}
+
+export async function authenticateSafeGeneration(token: string): Promise<void> {
+  await request<{ authenticated: true }>("/api/safe/session", { method: "POST", body: JSON.stringify({ token }) });
+}
+
+export async function createSafeBuild(prompt: string): Promise<BuildResponse> {
+  const payload = await request<ApiEnvelope>("/api/safe/builds", { method: "POST", body: JSON.stringify({ prompt }) });
+  return payload.build;
+}
+
+export async function confirmSafeBuild(buildId: string): Promise<BuildResponse> {
+  const payload = await request<ApiEnvelope & { generation: { status: string; validation: string; runtime: string } }>(
+    `/api/safe/builds/${encodeURIComponent(buildId)}/confirm`,
+    { method: "POST" },
+  );
   return payload.build;
 }
 

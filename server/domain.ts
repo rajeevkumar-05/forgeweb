@@ -250,6 +250,7 @@ export type BuildEvent = {
 };
 
 export type Build = {
+  generationMode?: "legacy" | "safe";
   planningRecordId?: string;
   id: string;
   projectId: string;

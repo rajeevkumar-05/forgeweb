@@ -6,6 +6,7 @@ import { createForgeWebRequestHandler, type ForgeWebRequestHandler } from "./ser
 import { JsonStore } from "./server/store.ts";
 import { BuildWorkflow } from "./server/workflow.ts";
 import { resetLlmConfig, resetLlmProvider } from "./server/llm/index.ts";
+import { SafeGenerationActivationService, safeGenerationConfigFromEnvironment } from "./server/generation/activation.ts";
 
 function forgeWebDevApi(): Plugin {
   let handler: Promise<ForgeWebRequestHandler> | undefined;
@@ -18,7 +19,10 @@ function forgeWebDevApi(): Plugin {
       handler = (async () => {
         const store = new JsonStore(resolve(process.cwd(), ".forgeweb-data"));
         await store.initialize();
-        return createForgeWebRequestHandler(new BuildWorkflow(store));
+        return createForgeWebRequestHandler(
+          new BuildWorkflow(store),
+          new SafeGenerationActivationService(store, safeGenerationConfigFromEnvironment()),
+        );
       })();
       server.middlewares.use((request, response, next) => {
         if (!request.url?.startsWith("/api")) {

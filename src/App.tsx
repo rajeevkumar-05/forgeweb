@@ -30,7 +30,20 @@ import { LanguageShowcase } from "./components/LanguageShowcase";
 import SiteNav from "./components/SiteNav";
 import BuildProposal from "./components/BuildProposal";
 import ProjectLibrary from "./components/ProjectLibrary";
-import { confirmBuild, createBuild, getLlmStatus, reviseBuild, waitForBuild, type BuildResponse, type LlmStatus } from "./lib/forgeweb-api";
+import {
+  authenticateSafeGeneration,
+  confirmBuild,
+  confirmSafeBuild,
+  createBuild,
+  createSafeBuild,
+  getLlmStatus,
+  getSafeGenerationStatus,
+  reviseBuild,
+  waitForBuild,
+  type BuildResponse,
+  type LlmStatus,
+  type SafeGenerationStatus,
+} from "./lib/forgeweb-api";
 
 const floatingLinesGradient = ["#50c7f0", "#000000", "#0ac0e0"];
 const FloatingLines = lazy(() => import("./components/react-bits/FloatingLines"));
@@ -89,6 +102,9 @@ function Hero() {
   const [projectRefreshToken, setProjectRefreshToken] = useState(0);
   const [statusDetail, setStatusDetail] = useState("Ready — your prompt becomes a versioned specification before code is generated.");
   const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
+  const [workflowMode, setWorkflowMode] = useState<"legacy" | "safe">("legacy");
+  const [safeStatus, setSafeStatus] = useState<SafeGenerationStatus | null>(null);
+  const [activationToken, setActivationToken] = useState("");
   const activeStage = buildStages[Math.max(stage, 0)];
   const ActiveStageIcon = activeStage.icon;
 
@@ -99,6 +115,7 @@ function Hero() {
     }).catch((err) => {
       console.error("[ForgeWeb] LLM status fetch failed:", err);
     });
+    getSafeGenerationStatus().then(setSafeStatus).catch(() => setSafeStatus(null));
   }, []);
 
   const launchDemo = async (event: FormEvent) => {
@@ -110,7 +127,12 @@ function Hero() {
     setStage(-1);
     setStatusDetail("Master spec — submitting the idea to the private build workspace…");
     try {
-      const created = await createBuild(prompt);
+      if (workflowMode === "safe" && !safeStatus?.authenticated) {
+        await authenticateSafeGeneration(activationToken);
+        setActivationToken("");
+        setSafeStatus(await getSafeGenerationStatus());
+      }
+      const created = workflowMode === "safe" ? await createSafeBuild(prompt) : await createBuild(prompt);
       const completed = await waitForBuild(created.id, (build) => {
         setBuild(build);
         setStage(visibleBuildStage(build));
@@ -141,7 +163,7 @@ function Hero() {
     setRunning(true);
     setStatusDetail("Secure build — requirements confirmed; starting frontend and backend generation…");
     try {
-      const confirmed = await confirmBuild(build.id);
+      const confirmed = build.generationMode === "safe" ? await confirmSafeBuild(build.id) : await confirmBuild(build.id);
       setBuild(confirmed);
       const completed = await waitForBuild(confirmed.id, (progress) => {
         setBuild(progress);
@@ -194,6 +216,7 @@ function Hero() {
   };
 
   const openSavedProject = (savedBuild: BuildResponse) => {
+    setWorkflowMode(savedBuild.generationMode === "safe" ? "safe" : "legacy");
     setBuild(savedBuild);
     setStage(visibleBuildStage(savedBuild));
     setStatusDetail(savedBuild.status === "completed" ? `Saved project opened — ${savedBuild.stageDetail}` : visibleBuildDetail(savedBuild));
@@ -262,6 +285,25 @@ function Hero() {
                 <div className="hero-chat-label"><span /> Ask ForgeWeb</div>
                 <div className="hero-chat-security"><LockKeyhole className="size-3" /> Private build workspace</div>
               </div>
+              {safeStatus?.enabled && (
+                <div className="hero-workflow-row">
+                  <div className="hero-workflow-switch" role="group" aria-label="Generation workflow">
+                    <button type="button" className={workflowMode === "legacy" ? "is-active" : ""} onClick={() => setWorkflowMode("legacy")}>Standard</button>
+                    <button type="button" className={workflowMode === "safe" ? "is-active" : ""} onClick={() => setWorkflowMode("safe")}><ShieldCheck /> Verified</button>
+                  </div>
+                  {workflowMode === "safe" && !safeStatus.authenticated && (
+                    <input
+                      type="password"
+                      value={activationToken}
+                      onChange={(event) => setActivationToken(event.target.value)}
+                      className="hero-activation-token"
+                      aria-label="Verified workflow activation token"
+                      placeholder="Activation token"
+                      autoComplete="current-password"
+                    />
+                  )}
+                </div>
+              )}
               <label className="sr-only" htmlFor="product-prompt">Describe your application</label>
               <textarea
                 id="product-prompt"
@@ -284,7 +326,7 @@ function Hero() {
                     </button>
                   ))}
                 </div>
-                <button type="submit" className="button button-acid shrink-0" disabled={running || prompt.trim().length < 12}>
+                <button type="submit" className="button button-acid shrink-0" disabled={running || prompt.trim().length < 12 || (workflowMode === "safe" && !safeStatus?.authenticated && activationToken.length < 1)}>
                   {running ? "Forging…" : "Forge this idea"}
                   {running ? <CircleDot className="size-4 animate-pulse" /> : <ArrowRight className="size-4" />}
                 </button>
@@ -310,7 +352,7 @@ function Hero() {
             <span className="flex items-center gap-1.5"><KeyRound className="size-3.5" /> Managed or BYOK</span>
           </div>
           <ProjectLibrary activeProjectId={build?.projectId} refreshToken={projectRefreshToken} onOpen={openSavedProject} />
-          <BuildProposal build={build} busy={running} onConfirm={confirmProposal} onRevise={reviseProposal} onProjectUpdated={() => setProjectRefreshToken((value) => value + 1)} />
+          <BuildProposal build={build} busy={running} onConfirm={confirmProposal} onRevise={build?.generationMode === "safe" ? undefined : reviseProposal} onProjectUpdated={() => setProjectRefreshToken((value) => value + 1)} />
         </div>
       </div>
       <div className="hero-scroll-cue"><span>SCROLL TO TRACE THE SYSTEM</span><i /></div>
