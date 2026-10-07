@@ -10,10 +10,12 @@
 import type { DetectionConfidence } from '../analysis.types.ts';
 import { DOMAIN_PROFILES } from './knowledge-base.ts';
 import type { DomainProfile } from './knowledge-base.ts';
-import { containsPhrase } from './normalize.ts';
+import { phraseMentions } from './normalize.ts';
+import { OPERATION_LEXICON } from './lexicon.ts';
 
 const STRONG_WEIGHT = 3;
 const WEAK_WEIGHT = 1;
+const NEGATED_OPERATIONS = OPERATION_LEXICON.flatMap(entry => [...entry.phrases]);
 
 export interface IntentDetection {
   profile: DomainProfile | null;
@@ -32,13 +34,13 @@ function scoreProfile(normalizedPrompt: string, profile: DomainProfile): Profile
   const matches: string[] = [];
 
   for (const keyword of profile.strongKeywords) {
-    if (containsPhrase(normalizedPrompt, keyword)) {
+    if (phraseMentions(normalizedPrompt, [keyword], NEGATED_OPERATIONS).some(mention => mention.polarity === 'included')) {
       score += STRONG_WEIGHT;
       matches.push(keyword);
     }
   }
   for (const keyword of profile.weakKeywords) {
-    if (containsPhrase(normalizedPrompt, keyword)) {
+    if (phraseMentions(normalizedPrompt, [keyword], NEGATED_OPERATIONS).some(mention => mention.polarity === 'included')) {
       score += WEAK_WEIGHT;
       matches.push(keyword);
     }
@@ -69,4 +71,3 @@ export function detectIntent(normalizedPrompt: string): IntentDetection {
 
   return { profile: best.profile, confidence, matchedKeywords: best.matches };
 }
-

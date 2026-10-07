@@ -61,6 +61,14 @@ function specFromAnalysis(analysis: RequirementsAnalysis): RequirementSpec | nul
     projectName: f.productName, projectType: f.projectType, roles: [...f.roles], modules: [...f.modules],
     frontend: [...f.frontend], backend: [...f.backend], database: [...f.entities],
     authentication: [...f.authentication], integrations: [...f.integrations], missingRequirements: [...f.missingRequirements],
+    functionalRequirements: f.functionalRequirements && [...f.functionalRequirements],
+    constraints: f.constraints && [...f.constraints],
+    semantics: f.semantics && {
+      operations: f.semantics.operations.map(item => ({ action: item.action, modules: [...item.modules] })),
+      fields: f.semantics.fields.map(item => ({ name: item.name, modules: [...item.modules] })),
+      exclusions: f.semantics.exclusions.map(item => ({ ...item, modules: item.modules && [...item.modules] })),
+      evidence: f.semantics.evidence.map(item => ({ ...item })),
+    },
   };
 }
 
@@ -157,11 +165,32 @@ export class NexArchPlanningAdapter implements Pick<GenerationEngine, "analyzeRe
       const result = this.backend.analyzeRequirements(request.prompt);
       if (result.status === "INCOMPLETE") return success({ proposedRequirements: [], questions: [...result.questions], context: contextFor(request) });
       const spec = result.spec;
+      const modules = spec.modules.filter(module => !["Dashboard", "Settings"].includes(module));
       return success({
-        proposedRequirements: spec.modules.filter((module) => !["Dashboard", "Settings"].includes(module)).map((module) => ({ title: `Manage ${module}`, description: `${module} capability for ${spec.projectName}.`, acceptanceCriteria: [`Users can manage ${module.toLowerCase()}.`], priority: "P0" as const })),
+        proposedRequirements: modules.map((module, index) => {
+          const actions = spec.semantics?.operations.filter(item => item.modules.includes(module)).map(item => item.action) ?? [];
+          const fields = spec.semantics?.fields.filter(item => item.modules.includes(module)).map(item => item.name) ?? [];
+          const details = [
+            ...actions.map(action => `Users can ${action} ${module.toLowerCase()}.`),
+            ...fields.map(field => `${module} includes the requested ${field} field.`),
+            // Keep existing module IDs/endpoint traceability; global facts accompany
+            // the first requirement rather than inventing unmapped implementation IDs.
+            ...(index === 0 ? [
+              `Roles: ${spec.roles.join(", ")}.`,
+              ...(spec.constraints ?? []),
+              ...(spec.functionalRequirements ?? []).filter(item => /^(Integration|Backend capability|Frontend capability):/.test(item)),
+            ] : []),
+          ];
+          return {
+            title: `Manage ${module}`,
+            description: [`${module} capability for ${spec.projectName}.`, ...details].join(" "),
+            acceptanceCriteria: [`Users can manage ${module.toLowerCase()}.`, ...details],
+            priority: "P0" as const,
+          };
+        }),
         questions: [],
         context: contextFor(request),
-        facets: { productName: spec.projectName, projectType: spec.projectType, roles: [...spec.roles], modules: [...spec.modules], frontend: [...spec.frontend], backend: [...spec.backend], entities: [...spec.database], authentication: [...spec.authentication], integrations: [...spec.integrations], missingRequirements: [...spec.missingRequirements] },
+        facets: { productName: spec.projectName, projectType: spec.projectType, roles: [...spec.roles], modules: [...spec.modules], frontend: [...spec.frontend], backend: [...spec.backend], entities: [...spec.database], authentication: [...spec.authentication], integrations: [...spec.integrations], missingRequirements: [...spec.missingRequirements], functionalRequirements: [...(spec.functionalRequirements ?? [])], constraints: [...(spec.constraints ?? [])], semantics: spec.semantics && structuredClone(spec.semantics) },
       });
     } catch (error) { return catchFailure(error, "analysis"); }
   }

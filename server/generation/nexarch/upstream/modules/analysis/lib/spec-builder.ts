@@ -6,7 +6,7 @@
  */
 import type { ExtractedFeatures, RequirementSpec } from '../analysis.types.ts';
 import type { DomainProfile } from './knowledge-base.ts';
-import { MODULE_LEXICON } from './lexicon.ts';
+import { EXCLUSION_LINKS, FIELD_LEXICON, MODULE_LEXICON } from './lexicon.ts';
 import { containsPhrase, dedupe, singularize, titleCase } from './normalize.ts';
 
 /** Modules that are platform chrome rather than data domains. */
@@ -108,6 +108,15 @@ export function buildSpec(
   profile: DomainProfile | null,
   features: ExtractedFeatures,
 ): RequirementSpec {
+  const evidence = features.evidence;
+  const exclusions = evidence.filter(item => item.polarity === 'excluded')
+    .filter((item, index, items) => items.findIndex(other => other.kind === item.kind && other.label === item.label) === index)
+    .map(({ kind, label }) => ({ kind, label }));
+  const excluded = (kind: typeof exclusions[number]['kind'], label: string) => exclusions.some(item => item.kind === kind && item.label === label);
+  const links = EXCLUSION_LINKS.filter(link => excluded(link.kind, link.label));
+  const excludedModules = new Set([...exclusions.filter(item => item.kind === 'module').map(item => item.label), ...links.flatMap(link => [...link.modules])]);
+  const excludedEntities = new Set([...entitiesForModules([...excludedModules]), ...links.flatMap(link => [...link.entities])]);
+  const excludedIntegrations = new Set([...exclusions.filter(item => item.kind === 'integration').map(item => item.label), ...links.flatMap(link => [...link.integrations])]);
   // Domain roles and explicitly-mentioned roles are unioned: "with vendors"
   // extends the e-commerce defaults rather than replacing them, and a
   // mention of "admin dashboard" can never collapse the spec to Admin-only.
@@ -115,21 +124,53 @@ export function buildSpec(
     'Admin',
     ...(profile?.roles ?? (features.roles.length > 0 ? [] : ['User'])),
     ...features.roles,
-  ]);
+  ]).filter(role => !excluded('role', role));
 
   const modules = dedupe([
     'Authentication',
     ...(profile?.modules ?? ['Dashboard', 'Users', 'Settings']),
     ...features.modules,
-  ]);
+  ]).filter(module => !excludedModules.has(module));
 
   const database = dedupe([
     'Users',
     ...(profile?.entities ?? []),
     ...entitiesForModules(features.modules),
-  ]);
+  ]).filter(entity => !excludedEntities.has(entity));
 
-  const integrations = dedupe([...features.integrations, ...(profile?.integrations ?? [])]);
+  const integrations = dedupe([...features.integrations, ...(profile?.integrations ?? [])]).filter(integration => !excludedIntegrations.has(integration));
+  const dataModules = modules.filter(module => !NON_DATA_MODULES.has(module));
+  const facts = (kind: 'operation' | 'field') => evidence.filter(item => item.kind === kind && item.polarity === 'included');
+  const scopeFor = (clause: string) => {
+    const explicit = MODULE_LEXICON.filter(entry => dataModules.includes(entry.label) && entry.phrases.some(phrase => containsPhrase(clause, phrase))).map(entry => entry.label);
+    return explicit.length ? explicit : dataModules.filter(module => module !== 'Users');
+  };
+  const scopeForFact = (fact: typeof evidence[number]) => {
+    if (fact.kind !== 'operation') return scopeFor(fact.clause);
+    const object = fact.clause.slice(fact.clause.indexOf(fact.phrase) + fact.phrase.length).split(/\b(?:with|for|in|to|from|by)\b/)[0];
+    const targets = MODULE_LEXICON.filter(entry => dataModules.includes(entry.label) && entry.phrases.some(phrase => containsPhrase(object, phrase))).map(entry => entry.label);
+    return targets.length ? targets : scopeFor(fact.clause);
+  };
+  const denied = (kind: 'operation' | 'field', label: string, module: string) => evidence.some(item => item.kind === kind && item.label === label && item.polarity === 'excluded' && scopeForFact(item).includes(module));
+  const operations = [...new Set(facts('operation').map(item => item.label))].map(action => ({
+    action, modules: dedupe(facts('operation').filter(item => item.label === action).flatMap(scopeForFact)).filter(module => !denied('operation', action, module)),
+  })).filter(item => item.modules.length);
+  const fields = [...new Set(facts('field').map(item => item.label))].map(name => ({
+    name, modules: dedupe(facts('field').filter(item => item.label === name).flatMap(item => scopeFor(item.clause)))
+      .filter(module => FIELD_LEXICON.find(entry => entry.label === name)?.modules.includes(module) && !denied('field', name, module)),
+  })).filter(item => item.modules.length);
+  const scopedExclusions = exclusions.map(item => item.kind === 'operation' || item.kind === 'field'
+    ? { ...item, modules: dedupe(evidence.filter(fact => fact.kind === item.kind && fact.label === item.label && fact.polarity === 'excluded').flatMap(scopeForFact)) }
+    : item);
+  const functionalRequirements = [
+    ...operations.map(item => `${item.modules.join(', ')}: ${item.action}.`),
+    ...fields.map(item => `${item.modules.join(', ')} field: ${item.name}.`),
+    `Roles: ${roles.join(', ')}.`,
+    ...integrations.map(integration => `Integration: ${integration}.`),
+    ...features.backend.map(feature => `Backend capability: ${feature}.`),
+    ...features.frontend.map(feature => `Frontend capability: ${feature}.`),
+  ];
+  const constraints = scopedExclusions.map(item => `Exclude ${item.kind}: ${item.label}${'modules' in item ? ` (${item.modules.join(', ')})` : ''}.`);
 
   return {
     projectName: extractProjectName(rawPrompt) ?? profile?.defaultName ?? 'Custom Application',
@@ -141,7 +182,10 @@ export function buildSpec(
     database,
     authentication: buildAuthentication(features, roles.length),
     integrations,
-    missingRequirements: buildMissingRequirements(profile, normalizedPrompt),
+    missingRequirements: buildMissingRequirements(profile, normalizedPrompt).filter(label => !excludedIntegrations.has(label) && !excludedModules.has(label)),
+    semantics: { operations, fields, exclusions: scopedExclusions, evidence },
+    functionalRequirements,
+    constraints,
+    acceptanceCriteria: [...functionalRequirements, ...constraints],
   };
 }
-

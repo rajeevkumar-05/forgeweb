@@ -25,8 +25,8 @@ import { planOptimization } from "./modules/database-designer/lib/optimization-p
 
 export function analyzeRequirements(prompt: string): AnalysisResult {
   const normalized = normalize(prompt);
-  const intent = detectIntent(normalized);
-  const features = extractFeatures(normalized);
+  const intent = detectIntent(prompt);
+  const features = extractFeatures(prompt);
   const detection: DetectionSummary = {
     projectType: intent.profile?.type ?? null,
     confidence: intent.confidence,

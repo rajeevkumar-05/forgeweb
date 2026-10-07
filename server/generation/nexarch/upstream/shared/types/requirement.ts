@@ -3,6 +3,23 @@
  * Architecture Planner (consumer). Lives in shared/ because module islands
  * never import each other's internals — stage contracts are shared types.
  */
+export type RequirementEvidenceKind = 'role' | 'module' | 'authentication' | 'integration' | 'backend' | 'frontend' | 'operation' | 'field';
+
+export interface RequirementEvidence {
+  kind: RequirementEvidenceKind;
+  label: string;
+  phrase: string;
+  clause: string;
+  polarity: 'included' | 'excluded';
+}
+
+export interface RequirementSemantics {
+  operations: { action: string; modules: string[] }[];
+  fields: { name: string; modules: string[] }[];
+  exclusions: { kind: RequirementEvidenceKind; label: string; modules?: string[] }[];
+  evidence: RequirementEvidence[];
+}
+
 export interface RequirementSpec {
   projectName: string;
   projectType: string;
@@ -15,6 +32,8 @@ export interface RequirementSpec {
   integrations: string[];
   /** Features the domain usually needs that the prompt never mentioned. */
   missingRequirements: string[];
+  /** Explicit prompt facts, distinct from domain defaults. Exclusions win conflicts. */
+  semantics?: RequirementSemantics;
 
   /* ── Planning-mesh detail ───────────────────────────────────────────
    *
@@ -38,4 +57,3 @@ export interface RequirementSpec {
   /** Testable statements of done. */
   acceptanceCriteria?: string[];
 }
-

@@ -57,7 +57,7 @@ export const AUTH_LEXICON: readonly LexiconEntry[] = [
 export const INTEGRATION_LEXICON: readonly LexiconEntry[] = [
   {
     label: 'Payment Gateway',
-    phrases: ['payment', 'payments', 'stripe', 'razorpay', 'paypal', 'checkout', 'pay online'],
+    phrases: ['payment', 'payments', 'stripe', 'razorpay', 'paypal', 'checkout', 'pay', 'pay online', 'invoice', 'invoices'],
   },
   {
     label: 'Email',
@@ -160,6 +160,7 @@ export const FRONTEND_LEXICON: readonly LexiconEntry[] = [
 
 export const ROLE_LEXICON: readonly LexiconEntry[] = [
   { label: 'Admin', phrases: ['admin', 'administrator', 'super admin'] },
+  { label: 'User', phrases: ['user', 'users'] },
   { label: 'Manager', phrases: ['manager', 'managers'] },
   { label: 'Employee', phrases: ['employee', 'employees', 'staff'] },
   { label: 'Customer', phrases: ['customer', 'customers', 'client', 'clients', 'buyer', 'buyers'] },
@@ -190,6 +191,10 @@ export const ROLE_LEXICON: readonly LexiconEntry[] = [
 
 export const MODULE_LEXICON: readonly ModuleLexiconEntry[] = [
   { label: 'Dashboard', phrases: ['dashboard', 'admin dashboard', 'admin panel'], entities: [] },
+  { label: 'Recipes', phrases: ['recipe', 'recipes', 'cookbook'], entities: ['Recipes'] },
+  { label: 'Categories', phrases: ['category', 'categories', 'cuisine', 'cuisines'], entities: ['Categories'] },
+  { label: 'Students', phrases: ['student', 'students'], entities: ['Students'] },
+  { label: 'Classes', phrases: ['class', 'classes', 'classroom', 'classrooms'], entities: ['Classes'] },
   {
     label: 'Users',
     phrases: ['user management', 'users module', 'manage users'],
@@ -212,7 +217,7 @@ export const MODULE_LEXICON: readonly ModuleLexiconEntry[] = [
   },
   {
     label: 'Payments',
-    phrases: ['payment', 'payments', 'billing', 'invoicing', 'invoices'],
+    phrases: ['payment', 'payments', 'billing', 'invoicing', 'invoice', 'invoices', 'pay'],
     entities: ['Payments', 'Invoices'],
   },
   { label: 'Reports', phrases: ['report', 'reports', 'reporting'], entities: [] },
@@ -355,3 +360,38 @@ export const MODULE_LEXICON: readonly ModuleLexiconEntry[] = [
   },
 ];
 
+export const OPERATION_LEXICON: readonly LexiconEntry[] = [
+  { label: 'create', phrases: ['create', 'add'] },
+  { label: 'edit', phrases: ['edit', 'editable', 'update', 'modify'] },
+  { label: 'delete', phrases: ['delete', 'remove'] },
+  { label: 'view', phrases: ['view', 'list', 'browse'] },
+  { label: 'assign', phrases: ['assign', 'assignment'] },
+  { label: 'track', phrases: ['track', 'tracking'] },
+  { label: 'search', phrases: ['search', 'searching'] },
+  { label: 'categorize', phrases: ['categorize', 'categorise'] },
+  { label: 'record', phrases: ['mark', 'record'] },
+];
+
+export interface FieldLexiconEntry extends LexiconEntry {
+  readonly modules: readonly string[];
+}
+
+export const FIELD_LEXICON: readonly FieldLexiconEntry[] = [
+  { label: 'name', phrases: ['name', 'names'], modules: ['Recipes', 'Tasks', 'Classes'] },
+  { label: 'description', phrases: ['description', 'descriptions'], modules: ['Recipes', 'Tasks'] },
+  { label: 'ingredients', phrases: ['ingredient', 'ingredients'], modules: ['Recipes'] },
+  { label: 'preparation steps', phrases: ['preparation steps', 'cooking steps', 'instructions', 'preparation instructions'], modules: ['Recipes'] },
+  { label: 'cooking time', phrases: ['cooking time', 'cooking duration', 'preparation time'], modules: ['Recipes'] },
+  { label: 'difficulty', phrases: ['difficulty', 'difficulty level'], modules: ['Recipes'] },
+  { label: 'category', phrases: ['category', 'categories'], modules: ['Recipes'] },
+  { label: 'cuisine', phrases: ['cuisine', 'cuisines'], modules: ['Recipes'] },
+  { label: 'status', phrases: ['status', 'task status', 'attendance status', 'completed', 'completion'], modules: ['Tasks', 'Attendance'] },
+  { label: 'due date', phrases: ['due date', 'due dates', 'deadline', 'deadlines'], modules: ['Tasks'] },
+  { label: 'priority', phrases: ['priority', 'priorities'], modules: ['Tasks'] },
+];
+
+/** Excluding a capability also excludes its domain-default surfaces and data. */
+export const EXCLUSION_LINKS = [
+  { kind: 'module', label: 'Payments', modules: ['Payments', 'Billing', 'Fees'], entities: ['Payments', 'Invoices', 'FeePayments'], integrations: ['Payment Gateway'] },
+  { kind: 'integration', label: 'Payment Gateway', modules: ['Payments', 'Billing', 'Fees'], entities: ['Payments', 'Invoices', 'FeePayments'], integrations: ['Payment Gateway'] },
+] as const;

@@ -89,6 +89,14 @@ export type RequirementsAnalysis = {
     readonly authentication: readonly string[];
     readonly integrations: readonly string[];
     readonly missingRequirements: readonly string[];
+    readonly functionalRequirements?: readonly string[];
+    readonly constraints?: readonly string[];
+    readonly semantics?: {
+      readonly operations: readonly { readonly action: string; readonly modules: readonly string[] }[];
+      readonly fields: readonly { readonly name: string; readonly modules: readonly string[] }[];
+      readonly exclusions: readonly { readonly kind: "role" | "module" | "authentication" | "integration" | "backend" | "frontend" | "operation" | "field"; readonly label: string; readonly modules?: readonly string[] }[];
+      readonly evidence: readonly { readonly kind: "role" | "module" | "authentication" | "integration" | "backend" | "frontend" | "operation" | "field"; readonly label: string; readonly phrase: string; readonly clause: string; readonly polarity: "included" | "excluded" }[];
+    };
   };
 };
 

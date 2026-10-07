@@ -51,10 +51,13 @@ export function evaluateCompleteness(
   }
 
   const source: readonly ClarifyingQuestion[] = profile ? profile.questions : GENERIC_QUESTIONS;
+  // Explicit "no payments" answers the payment question, but adds no positive
+  // signal toward completeness. Other required aspects still need evidence.
+  const answered = new Set(covered);
+  if (features.evidence.some(item => item.polarity === 'excluded' && ['Payments', 'Payment Gateway'].includes(item.label))) answered.add('payments');
   const questions = source
-    .filter((question) => !covered.has(question.aspect))
+    .filter((question) => !answered.has(question.aspect))
     .map((question) => question.text);
 
   return { complete: false, questions };
 }
-

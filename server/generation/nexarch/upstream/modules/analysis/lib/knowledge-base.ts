@@ -40,6 +40,27 @@ export interface DomainProfile {
 
 export const DOMAIN_PROFILES: readonly DomainProfile[] = [
   {
+    id: 'recipe', type: 'Recipe Management', defaultName: 'Recipe Manager', complexity: 'simple',
+    strongKeywords: ['recipe', 'recipes', 'cookbook'],
+    weakKeywords: ['ingredients', 'cooking time', 'cooking steps', 'preparation steps', 'cuisine'],
+    roles: ['Admin', 'User'], modules: ['Recipes'], entities: ['Recipes'], integrations: [],
+    expected: [{ label: 'Recipe search', coveredBy: ['search', 'searching'] }], questions: [],
+  },
+  {
+    id: 'task', type: 'Task Management', defaultName: 'Task Manager', complexity: 'simple',
+    strongKeywords: ['task management', 'task application', 'task app', 'tasks', 'todo', 'to-do'],
+    weakKeywords: ['task', 'assignment', 'assignee', 'due date', 'priority', 'task status'],
+    roles: ['Admin', 'User'], modules: ['Tasks'], entities: ['Tasks'], integrations: [],
+    expected: [{ label: 'Task assignment', coveredBy: ['assign', 'assignment', 'assignee'] }], questions: [],
+  },
+  {
+    id: 'attendance', type: 'Student Attendance', defaultName: 'Attendance Manager', complexity: 'simple',
+    strongKeywords: ['student attendance', 'attendance management', 'class attendance', 'school attendance', 'student management'],
+    weakKeywords: ['student', 'students', 'teacher', 'teachers', 'attendance', 'class', 'classes'],
+    roles: ['Admin', 'Teacher', 'Student'], modules: ['Students', 'Classes', 'Attendance'],
+    entities: ['Students', 'Classes', 'AttendanceRecords'], integrations: [], expected: [], questions: [],
+  },
+  {
     id: 'ecommerce',
     type: 'Ecommerce',
     defaultName: 'Ecommerce Platform',
@@ -684,4 +705,3 @@ export const GENERIC_QUESTIONS: readonly ClarifyingQuestion[] = [
     text: 'Are integrations needed — email, SMS, file uploads, real-time updates?',
   },
 ];
-

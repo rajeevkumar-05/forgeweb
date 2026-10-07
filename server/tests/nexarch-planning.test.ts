@@ -208,3 +208,48 @@ test("pipeline refuses an architecture/database dialect mismatch", async () => {
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.error.code, "validation_failure");
 });
+
+test("recipe operations, fields, roles and exclusions survive the ForgeWeb planning adapter", async () => {
+  const prompt = "Build a recipe management app. Users create, edit, delete, search and categorize recipes with ingredients, cooking time and difficulty. There are two roles: Admin and User. No payments or SMS.";
+  const result = await planPrompt(new NexArchPlanningAdapter(), request(prompt, "postgresql"));
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const { analysis, architecture, database } = result.value;
+  assert.equal(result.value.state, "proposed");
+  assert.equal(analysis.facets?.projectType, "Recipe Management");
+  assert.deepEqual(analysis.facets?.roles, ["Admin", "User"]);
+  assert.ok(analysis.facets?.semantics?.operations.some(item => item.action === "edit" && item.modules.includes("Recipes")));
+  assert.ok(analysis.facets?.semantics?.fields.some(item => item.name === "ingredients"));
+  assert.ok(analysis.facets?.constraints?.some(item => item.includes("Payments")));
+  const recipe = analysis.proposedRequirements.find(item => item.title === "Manage Recipes");
+  assert.ok(recipe?.acceptanceCriteria.some(item => item.includes("edit recipes")));
+  assert.ok(recipe?.description.includes("cooking time"));
+  assert.ok(analysis.proposedRequirements.some(item => item.acceptanceCriteria.includes("Roles: Admin, User.")));
+  assert.ok(analysis.proposedRequirements.some(item => item.acceptanceCriteria.includes("Exclude integration: SMS.")));
+  assert.ok(architecture?.structure?.entities.some(item => item.name === "Recipes"));
+  assert.ok(database?.entities.some(item => item.name === "Recipes"));
+  assert.ok(architecture?.endpoints.some(item => item.path === "/recipes" && item.requirementIds.length));
+  assert.ok(!JSON.stringify({ entities: database?.entities, endpoints: architecture?.endpoints, integrations: analysis.facets?.integrations }).match(/Payments|Invoices|\/payments|Payment Gateway|SMS/));
+});
+
+test("payment exclusions override ecommerce defaults through architecture and database planning", async () => {
+  const result = await planPrompt(new NexArchPlanningAdapter(), request("Build an ecommerce application with users and products. We don't need payments or SMS.", "postgresql"));
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const { analysis, architecture, database } = result.value;
+  assert.ok(analysis.facets?.modules.includes("Products"));
+  assert.ok(!analysis.facets?.modules.includes("Payments"));
+  assert.ok(!analysis.facets?.integrations.includes("Payment Gateway"));
+  assert.ok(!architecture?.endpoints.some(item => item.path.startsWith("/payments")));
+  assert.ok(!database?.entities.some(item => ["Payments", "Invoices"].includes(item.name)));
+});
+
+test("explicit positive integrations and operations survive adapter translation without a second planner", async () => {
+  const result = await new NexArchPlanningAdapter().analyzeRequirements(request("Customers can pay invoices online. Send SMS notifications to users.", "postgresql"));
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.ok(result.value.facets?.integrations.includes("Payment Gateway"));
+  assert.ok(result.value.facets?.integrations.includes("SMS"));
+  assert.ok(result.value.proposedRequirements.some(item => item.acceptanceCriteria.includes("Integration: SMS.")));
+  assert.ok(result.value.facets?.entities.includes("Invoices"));
+});

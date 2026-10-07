@@ -11,6 +11,7 @@
 // in shared/types; re-exported so this module's public shape is unchanged.
 export type { RequirementSpec } from '../../shared/types/requirement.ts';
 import type { RequirementSpec } from '../../shared/types/requirement.ts';
+import type { RequirementEvidence } from '../../shared/types/requirement.ts';
 
 /** How confident the intent detector is about the classified project type. */
 export type DetectionConfidence = 'high' | 'medium' | 'low';
@@ -56,5 +57,5 @@ export interface ExtractedFeatures {
   frontend: string[];
   /** Union of every matched phrase, for detection summaries and logging. */
   signals: string[];
+  evidence: RequirementEvidence[];
 }
-
