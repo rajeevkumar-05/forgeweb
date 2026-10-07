@@ -11,6 +11,7 @@ import { generateEntityMetadata } from "./upstream/modules/database-designer/lib
 import { generateOpenApi } from "./upstream/modules/database-designer/lib/openapi-generator.ts";
 import { generateFrontend as upstreamGenerateFrontend } from "./upstream/modules/frontend-generator/frontend-generator.service.ts";
 import type { BackendManifest, GeneratedFrontend } from "./upstream/modules/frontend-generator/frontend-generator.types.ts";
+import { crudOperations, operationForMethod } from "./upstream/shared/utils/operations.ts";
 
 export const NEXARCH_FRONTEND_REVISION = "398f4cbd9e314954eda95540411ed4d06cd50cf3";
 const ENGINE: EngineMetadata = { name: "forgeweb-nexarch-frontend", version: "1", contractVersion: "forgeweb-generation-v1" };
@@ -61,14 +62,17 @@ function requirementsForFeature(backend: BackendSlice, feature: string, entity: 
   return [...new Set(backend.routes.filter((route) => route.feature === feature || (entity !== null && route.entity === entity)).flatMap((route) => route.requirementIds))].sort();
 }
 
-function canonicalCalls(backend: BackendSlice, project: GeneratedFrontend): FrontendSlice["api"]["generatedCalls"] {
+function canonicalCalls(request: GenerationRequest, backend: BackendSlice, project: GeneratedFrontend): FrontendSlice["api"]["generatedCalls"] {
   const calls: { method: string; path: string; feature: string; requirementIds: readonly string[] }[] = [];
   for (const page of project.pages.filter((page) => page.kind === "entity-list" && page.implemented && page.entity)) {
     const routes = backend.routes.filter((route) => route.status === "implemented" && (route.feature === page.name || route.entity === page.entity));
     const root = routes.find((route) => route.method === "GET" && !route.path.includes(":id"))?.path;
     if (!root) throw new TypeError(`Implemented frontend page has no backend collection route: ${page.name}`);
     const expected = [["GET", root], ["GET", `${root}/:id`], ["POST", root], ["PUT", `${root}/:id`], ["DELETE", `${root}/:id`]] as const;
+    const semantic = upstreamRequirements(request).semantics?.design?.entities.find(entity => entity.name === page.entity);
+    const operations = crudOperations(semantic);
     for (const [method, path] of expected) {
+      if (!operations.includes(operationForMethod(method))) continue;
       const route = routes.find((candidate) => candidate.method === method && candidate.path === path);
       if (!route) throw new TypeError(`Implemented frontend page lacks backend capability: ${method} ${path}`);
       calls.push({ method, path, feature: route.feature, requirementIds: [...route.requirementIds] });
@@ -123,7 +127,7 @@ function buildSlice(request: GenerationRequest, backend: BackendSlice, project: 
     .sort((left, right) => `${left.path}:${left.page}`.localeCompare(`${right.path}:${right.page}`));
   const stores = project.stores.map((store) => ({ ...store, file: `frontend/${store.file}`, sensitive: store.name === "auth", requirementIds: store.name === "auth" ? requirementsForFeature(backend, "Authentication", null) : [] }))
     .sort((left, right) => left.name.localeCompare(right.name));
-  const generatedCalls = canonicalCalls(backend, project);
+  const generatedCalls = canonicalCalls(request, backend, project);
   const availableRoutes = backend.routes.filter((route) => route.status === "implemented").map((route) => ({ method: route.method, path: route.path, feature: route.feature, requirementIds: [...route.requirementIds] }));
   const unavailableRoutes = backend.routes.filter((route) => route.status === "stub").map((route) => ({ method: route.method, path: route.path, feature: route.feature, requirementIds: [...route.requirementIds] }));
   const tracedFiles = files.filter((file) => file.requirementIds.length).map((file) => ({ path: file.path, requirementIds: file.requirementIds }));

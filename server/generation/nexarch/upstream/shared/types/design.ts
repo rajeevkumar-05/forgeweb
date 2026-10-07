@@ -12,6 +12,8 @@
 
 /* ── Relational design ───────────────────────────────────────────────── */
 
+import type { RequirementSemantics, SemanticEntity } from './requirement.ts';
+
 export type ReferentialAction = 'CASCADE' | 'RESTRICT' | 'SET NULL' | 'NO ACTION';
 export type OnDelete = ReferentialAction;
 export type OnUpdate = ReferentialAction;
@@ -144,6 +146,7 @@ export interface IndexDesign {
 }
 
 export interface TableDesign {
+  semantic?: SemanticEntity;
   /** PascalCase Prisma model name. */
   entity: string;
   /** snake_case physical table name. */
@@ -194,6 +197,7 @@ export interface OptimizationReport {
 }
 
 export interface DatabaseDesign {
+  semantics?: RequirementSemantics;
   meta: {
     projectName: string;
     projectType: string;

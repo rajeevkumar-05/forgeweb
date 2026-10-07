@@ -1,0 +1,11 @@
+{
+  "prompt": "Build a recipe management application.\n\nUsers can create, edit, and view recipes.\n\nEach recipe has title, ingredients, preparation steps, cooking time, difficulty, and category.\n\nNo payments are required.",
+  "entity": "Recipes",
+  "table": "recipes",
+  "path": "/api/v1/recipes",
+  "fields": { "title": "title", "ingredients": "ingredients", "preparationSteps": "preparation_steps", "cookingTime": "cooking_time", "difficulty": "difficulty", "category": "category" },
+  "updated": { "title": "Citrus Salad Updated", "ingredients": "Orange, lemon, mint", "preparationSteps": "Slice fruit and garnish with mint.", "cookingTime": "15 minutes", "difficulty": "Easy", "category": "Salads" },
+  "supported": ["create", "read", "update"],
+  "unsupported": [],
+  "exclusions": ["payment", "invoice", "checkout"]
+}

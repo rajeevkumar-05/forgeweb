@@ -70,6 +70,8 @@ export class PlanningApprovalService {
       const specification: MasterSpecification = {
         id: specificationId, projectId: project.id, version: revision, status: "proposed", prompt: proposal.prompt,
         productName: facets?.productName ?? project.name, summary: proposal.prompt, roles: [...(facets?.roles ?? [])],
+        ...(facets ? { projectType: facets.projectType, authentication: [...facets.authentication], integrations: [...facets.integrations], constraints: [...(facets.constraints ?? [])] } : {}),
+        ...(facets?.semantics ? { semantics: structuredClone(facets.semantics) as MasterSpecification["semantics"] } : {}),
         entities: proposal.database!.entities.map((entity) => entity.name), assumptions: [...(facets?.missingRequirements ?? [])],
         requirements: proposal.analysis.proposedRequirements.map((requirement, index) => ({ ...structuredClone(requirement), acceptanceCriteria: [...requirement.acceptanceCriteria], id: `REQ-${String(index + 1).padStart(3, "0")}` })),
         architecture: structuredClone(proposal.architecture!.projection) as MasterSpecification["architecture"], createdAt: now(),

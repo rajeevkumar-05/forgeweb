@@ -148,7 +148,7 @@ function summarizeComponents(
       components.push({ name, kind: 'layout', file: generated.path });
     }
   }
-  for (const page of model.pages.filter((p) => p.implemented)) {
+  for (const page of model.pages.filter((p) => p.implemented && (p.operations.includes('create') || p.operations.includes('update')))) {
     components.push({
       name: `${entitySingular(page.name)}Form`,
       kind: 'feature',

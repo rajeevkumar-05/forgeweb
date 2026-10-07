@@ -39,6 +39,7 @@ export function analyzeRequirements(prompt: string): AnalysisResult {
 
 export function planArchitecture(spec: RequirementSpec, target: DatabaseTargetStrategy): { plan: ArchitecturePlan; markdown: string } {
   const plan: ArchitecturePlan = {
+    ...(spec.semantics ? { semantics: structuredClone(spec.semantics) } : {}),
     meta: { projectName: spec.projectName, projectType: spec.projectType, generatedAt: new Date().toISOString(), planner: "nexarch-architecture-planner/1.0" },
     decisions: decideTechnology(spec, target),
     folderStructure: planFolders(spec),
@@ -69,6 +70,7 @@ export function designDatabase(architecture: ArchitecturePlan, requirements: Req
     for (const item of designed.enums) if (!enumMap.has(item.name)) enumMap.set(item.name, item);
   }
   const design: DatabaseDesign = {
+    ...(requirements.semantics ? { semantics: structuredClone(requirements.semantics) } : {}),
     meta: {
       projectName: architecture.meta.projectName,
       projectType: architecture.meta.projectType,

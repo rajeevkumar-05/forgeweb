@@ -19,7 +19,7 @@ import { planPrompt } from "../generation/planning.ts";
 import { digest } from "../lib.ts";
 import { JsonStore } from "../store.ts";
 
-const PROMPT = "Build a task management application where users create, edit, assign, delete, and track tasks with authentication.";
+const PROMPT = "Build a task management application where users create, view, edit, assign, delete, and track tasks with authentication.";
 const CONFIRMED_AT = "2026-01-02T03:04:05.000Z";
 
 function planningRequest(): PlanningRequest {
@@ -165,10 +165,11 @@ test("bearer authentication state is memory-only and auth calls require implemen
   assert.ok(authStore);
   assert.doesNotMatch(authStore, /persist\(|localStorage|sessionStorage|app\.auth/);
   assert.deepEqual(result.value.stores.find((store) => store.name === "auth"), {
-    name: "auth", file: "frontend/src/shared/store/auth.store.ts", persisted: false, sensitive: true, requirementIds: [],
+    name: "auth", file: "frontend/src/shared/store/auth.store.ts", persisted: false, sensitive: true,
+    requirementIds: backend.routes.find(route => route.feature === "Authentication")?.requirementIds ?? [],
   });
-  assert.equal(result.value.pages.some((page) => page.kind === "auth"), false);
-  assert.equal(result.value.api.generatedCalls.some((call) => call.path.startsWith("/api/v1/auth/")), false);
+  assert.equal(result.value.pages.some((page) => page.kind === "auth"), true);
+  assert.equal(result.value.api.generatedCalls.some((call) => call.path.startsWith("/api/v1/auth/")), true);
 });
 
 test("requirement traceability covers evidenced pages, feature files, routes, and components", async () => {

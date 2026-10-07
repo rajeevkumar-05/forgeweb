@@ -3,6 +3,7 @@ import type { AssembledCandidateArtifacts } from "./generation/candidate.ts";
 import type { EngineeringEvidenceGraph } from "./generation/engineering-graph.ts";
 import type { LayoutMetadata } from "./generation/layout.ts";
 import type { CandidateValidationReport } from "./generation/validation.ts";
+import type { RequirementSemantics } from "./generation/nexarch/upstream/shared/types/requirement.ts";
 
 export type BuildStatus =
   | "queued"
@@ -63,6 +64,11 @@ export type MasterSpecification = {
   productName: string;
   summary: string;
   roles: string[];
+  projectType?: string;
+  authentication?: string[];
+  integrations?: string[];
+  constraints?: string[];
+  semantics?: RequirementSemantics;
   entities: string[];
   requirements: Requirement[];
   assumptions: string[];

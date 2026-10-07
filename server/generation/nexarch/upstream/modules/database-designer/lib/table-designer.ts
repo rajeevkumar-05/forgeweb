@@ -12,7 +12,7 @@
  * Enum columns contribute a shared Prisma enum, collected across all tables.
  */
 import type { EntityPlan } from '../../../shared/types/architecture.ts';
-import { camelCase } from '../../../shared/utils/strings.ts';
+import { camelCase, snakeCase } from '../../../shared/utils/strings.ts';
 import type {
   ColumnDesign,
   DatabaseTargetStrategy,
@@ -158,11 +158,17 @@ export function designTable(entity: EntityPlan, context: InferenceContext): Desi
   const claimed = new Set<string>(RESERVED_FIELDS);
   for (const name of fkNames) claimed.add(name);
 
-  for (const raw of entity.keyFields) {
+  const semanticFields = new Map(entity.semantic?.fields.map(field => [snakeCase(field.name), field]));
+  for (const raw of [...entity.keyFields, ...semanticFields.keys()]) {
     const parsed = parseKeyField(raw);
     if (claimed.has(parsed.name)) continue;
     claimed.add(parsed.name);
-    const column = inferColumn(entity.name, parsed, context);
+    const semantic = semanticFields.get(parsed.name);
+    // Unknown semantic types use existing inference/string255 defaults, not
+    // invented enum values merely because a field happens to be "category".
+    const column = inferColumn(entity.name, parsed, context, !semantic);
+    if (semantic?.required !== undefined) column.nullable = !semantic.required;
+    if (semantic?.description) column.description = semantic.description;
     columns.push(column);
     if (column.enumValues) {
       enums.push({ name: column.prismaType, values: column.enumValues, ...(column.enumDatabaseType ? { databaseName: column.enumDatabaseType } : {}) });
@@ -171,12 +177,15 @@ export function designTable(entity: EntityPlan, context: InferenceContext): Desi
 
   // Foreign-key columns.
   for (const fk of foreignKeys) {
-    columns.push(foreignKeyColumn(fk.foreignKey, fk.parent, fk.nullable, fk.onDelete, context.target));
+    const column = foreignKeyColumn(fk.foreignKey, fk.parent, fk.nullable, fk.onDelete, context.target);
+    column.unique = fk.cardinality === 'one-to-one';
+    columns.push(column);
   }
 
   columns.push(...auditColumns(context.target));
 
   const table: TableDesign = {
+    ...(entity.semantic ? { semantic: structuredClone(entity.semantic) } : {}),
     entity: entity.name,
     tableName: entity.tableName,
     columns,

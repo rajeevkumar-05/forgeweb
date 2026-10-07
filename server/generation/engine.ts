@@ -1,4 +1,5 @@
 import type { ArchitecturePlan, MasterSpecification, Requirement } from "../domain.ts";
+import type { RequirementSemantics, SemanticEntity } from "./nexarch/upstream/shared/types/requirement.ts";
 
 export type DeepReadonly<T> = T extends (infer Item)[]
   ? readonly DeepReadonly<Item>[]
@@ -91,23 +92,21 @@ export type RequirementsAnalysis = {
     readonly missingRequirements: readonly string[];
     readonly functionalRequirements?: readonly string[];
     readonly constraints?: readonly string[];
-    readonly semantics?: {
-      readonly operations: readonly { readonly action: string; readonly modules: readonly string[] }[];
-      readonly fields: readonly { readonly name: string; readonly modules: readonly string[] }[];
-      readonly exclusions: readonly { readonly kind: "role" | "module" | "authentication" | "integration" | "backend" | "frontend" | "operation" | "field"; readonly label: string; readonly modules?: readonly string[] }[];
-      readonly evidence: readonly { readonly kind: "role" | "module" | "authentication" | "integration" | "backend" | "frontend" | "operation" | "field"; readonly label: string; readonly phrase: string; readonly clause: string; readonly polarity: "included" | "excluded" }[];
-    };
+    readonly semantics?: DeepReadonly<RequirementSemantics>;
   };
 };
 
 export type PlanningFolder = { readonly name: string; readonly type: "directory" | "file"; readonly children?: readonly PlanningFolder[] };
 
 export type ArchitectureDraft = {
+  readonly semantics?: DeepReadonly<RequirementSemantics>;
   readonly context?: { readonly projectId: string; readonly buildId: string; readonly operationId: string; readonly subjectId: string; readonly ownerId: string | null; readonly promptDigest: string };
   readonly projection: DeepReadonly<ArchitecturePlan>;
   readonly endpoints: readonly {
     readonly method: string;
     readonly path: string;
+    readonly module?: string;
+    readonly entity?: string;
     readonly description?: string;
     readonly auth?: boolean;
     readonly roles?: readonly string[];
@@ -144,11 +143,13 @@ export type DatabaseTargetContract = {
 };
 
 export type DatabaseDesign = {
+  readonly semantics?: DeepReadonly<RequirementSemantics>;
   readonly dialect: "MySQL 8" | "PostgreSQL";
   readonly target: DatabaseTargetContract;
   readonly entities: readonly {
     readonly name: string;
     readonly tableName?: string;
+    readonly semantic?: DeepReadonly<SemanticEntity>;
     readonly primaryKey?: string;
     readonly fields: readonly { readonly name: string; readonly type: string; readonly prismaType?: string; readonly prismaNativeType?: string; readonly nullable: boolean; readonly primaryKey?: boolean; readonly unique?: boolean; readonly defaultExpression?: string; readonly onUpdateNow?: boolean; readonly references?: { readonly table: string; readonly column: string; readonly onDelete: string; readonly onUpdate: string }; readonly enumValues?: readonly string[]; readonly enumDatabaseType?: string; readonly nonNegative?: boolean; readonly format?: string; readonly description?: string }[];
     readonly indexes?: readonly { readonly name: string; readonly columns: readonly string[]; readonly unique: boolean }[];

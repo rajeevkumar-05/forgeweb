@@ -5,6 +5,8 @@ import { baseReference, candidateManifestDigest, prepareGenerationRequest, prepa
 import type { CandidateArtifacts, CandidateValidation, EngineMetadata, EngineResult, GenerationRequest } from "./engine.ts";
 import { FRONTEND_TARGET_PROFILE } from "./frontend.ts";
 import { APPLICATION_TARGET, databaseTargetContract } from "./targets.ts";
+import { crudOperations, operationForMethod } from "./nexarch/upstream/shared/utils/operations.ts";
+import { snakeCase } from "./nexarch/upstream/shared/utils/strings.ts";
 
 export const REQUIRED_CHECKS = ["typecheck", "build", "tests", "dependencies", "security", "startup-health", "postgresql-runtime"] as const;
 export const ISOLATED_CHECKS = ["typecheck", "build", "tests", "startup-health", "postgresql-runtime"] as const;
@@ -88,6 +90,10 @@ function canonical(value: unknown): unknown {
 
 function equal(left: unknown, right: unknown): boolean {
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+}
+
+function regexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function check(id: string, required: boolean, subjectPaths: readonly string[], assertion: () => void): ValidationCheck {
@@ -205,6 +211,35 @@ function staticChecks(request: GenerationRequest, candidate: CandidateArtifacts)
         && assembly.capabilities.backend.implementedRoutes === assembly.capabilities.backendRoutes.filter((route) => route.status === "implemented").length
         && assembly.capabilities.backend.stubRoutes === assembly.capabilities.backendRoutes.filter((route) => route.status === "stub").length,
       "Backend capability totals are inconsistent");
+    }),
+    check("semantic-coverage", true, paths, () => {
+      const design = request.approved.specification.semantics?.design;
+      if (!design) return;
+      const assembly = assemblyOf(candidate);
+      const requirements = JSON.parse(candidate.artifacts.find(artifact => artifact.kind === "requirements")?.content ?? "null");
+      requireCheck(equal(requirements?.semantics?.design, design), "Candidate semantic design differs from the approved contract");
+      const schema = candidate.files.find(file => file.path === "backend/prisma/schema.prisma")?.content ?? "";
+      for (const entity of design.entities) {
+        const backend = assembly.evidence.backendEntities.find(item => item.name === entity.name);
+        requireCheck(backend, `Semantic entity is missing: ${entity.name}`);
+        const model = new RegExp(`\\bmodel\\s+${regexLiteral(entity.name)}\\s*\\{([^}]+)\\}`).exec(schema)?.[1] ?? "";
+        for (const field of entity.fields) {
+          requireCheck(backend.fields.includes(snakeCase(field.name)) && new RegExp(`^\\s*${regexLiteral(field.name)}\\s+\\w+`, "m").test(model), `Semantic field is missing: ${entity.name}.${field.name}`);
+        }
+        const routes = assembly.capabilities.backendRoutes.filter(route => route.entity === entity.name);
+        if (entity.operationPolicy !== "explicit") continue;
+        const supported = crudOperations(entity);
+        for (const route of routes) requireCheck(supported.includes(operationForMethod(route.method)), `Unrequested operation emitted: ${entity.name}.${operationForMethod(route.method)}`);
+        for (const action of supported) {
+          requireCheck(routes.some(route => route.status === "implemented" && operationForMethod(route.method) === action), `Supported semantic operation is missing: ${entity.name}.${action}`);
+        }
+        const page = assembly.evidence.frontendPages.find(page => page.entity === entity.name);
+        if (supported.includes("read")) requireCheck(page?.status === "implemented", `Supported entity page is missing: ${entity.name}`);
+        for (const operation of entity.operations.filter(operation => operation.intent === "requested" && operation.action === "domain")) {
+          requireCheck(operation.support === "unsupported", `Domain operation lacks truthful support metadata: ${entity.name}.${operation.name}`);
+          requireCheck(!routes.some(route => route.path.split("/").includes(operation.name) && route.status === "implemented"), `Unsupported domain operation is reported implemented: ${entity.name}.${operation.name}`);
+        }
+      }
     }),
     check("deterministic-integrity", true, [], () => {
       const assembled = candidate as AssembledCandidateArtifacts;

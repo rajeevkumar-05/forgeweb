@@ -29,7 +29,7 @@ import type {
 } from './backend-generator.types.ts';
 import { emitAppWiring } from './lib/emit-app.ts';
 import { emitModule } from './lib/emit-module.ts';
-import { credentialTableOf } from './lib/emit-auth-module.ts';
+import { credentialTableOf, isAuthModule } from './lib/emit-auth-module.ts';
 import { emitProjectFiles } from './lib/emit-project-files.ts';
 import { emitShared } from './lib/emit-shared.ts';
 import { emitTests } from './lib/emit-tests.ts';
@@ -54,6 +54,7 @@ function summarize(mod: ModuleModel, files: readonly GeneratedFile[]): Generated
 
 function routesOf(project: ProjectModel): GeneratedRoute[] {
   const routes: GeneratedRoute[] = [];
+  const credential = credentialTableOf(project.tables);
   for (const mod of project.modules) {
     for (const endpoint of mod.endpoints) {
       routes.push({
@@ -61,7 +62,8 @@ function routesOf(project: ProjectModel): GeneratedRoute[] {
         path: `${project.apiPrefix}${mod.basePath}${endpoint.routePath === '/' ? '' : endpoint.routePath}`,
         handler: `${mod.className}Controller.${endpoint.handlerName}`,
         auth: endpoint.auth,
-        implemented: mod.entity !== null && endpoint.kind !== 'custom',
+        implemented: (mod.entity !== null && endpoint.kind !== 'custom')
+          || Boolean(credential && isAuthModule(mod) && ['POST /register', 'POST /login', 'POST /logout', 'GET /me'].includes(`${endpoint.method.toUpperCase()} ${endpoint.routePath}`)),
       });
     }
   }

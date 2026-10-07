@@ -1,0 +1,12 @@
+{
+  "prompt": "Build a task management application.\n\nUsers can create, edit, assign, and complete tasks.\n\nEach task has title, description, status, priority, and due date.",
+  "entity": "Tasks",
+  "table": "tasks",
+  "path": "/api/v1/tasks",
+  "fields": { "title": "title", "description": "description", "status": "status", "priority": "priority", "dueDate": "due_date" },
+  "updated": { "title": "Plan Release Updated", "description": "Prepare release checklist", "status": "IN_PROGRESS", "priority": "HIGH", "dueDate": "2026-11-12T00:00:00.000Z" },
+  "persisted": { "title": "Plan Release Updated", "description": "Prepare release checklist", "status": "IN_PROGRESS", "priority": "HIGH", "dueDate": "2026-11-12" },
+  "supported": ["create", "read", "update"],
+  "unsupported": ["assign", "complete"],
+  "exclusions": []
+}

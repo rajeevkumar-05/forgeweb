@@ -366,6 +366,7 @@ export const OPERATION_LEXICON: readonly LexiconEntry[] = [
   { label: 'delete', phrases: ['delete', 'remove'] },
   { label: 'view', phrases: ['view', 'list', 'browse'] },
   { label: 'assign', phrases: ['assign', 'assignment'] },
+  { label: 'complete', phrases: ['complete', 'finish', 'mark completed', 'mark as completed'] },
   { label: 'track', phrases: ['track', 'tracking'] },
   { label: 'search', phrases: ['search', 'searching'] },
   { label: 'categorize', phrases: ['categorize', 'categorise'] },
@@ -377,6 +378,7 @@ export interface FieldLexiconEntry extends LexiconEntry {
 }
 
 export const FIELD_LEXICON: readonly FieldLexiconEntry[] = [
+  { label: 'title', phrases: ['title', 'titles'], modules: ['Recipes', 'Tasks'] },
   { label: 'name', phrases: ['name', 'names'], modules: ['Recipes', 'Tasks', 'Classes'] },
   { label: 'description', phrases: ['description', 'descriptions'], modules: ['Recipes', 'Tasks'] },
   { label: 'ingredients', phrases: ['ingredient', 'ingredients'], modules: ['Recipes'] },
@@ -386,6 +388,7 @@ export const FIELD_LEXICON: readonly FieldLexiconEntry[] = [
   { label: 'category', phrases: ['category', 'categories'], modules: ['Recipes'] },
   { label: 'cuisine', phrases: ['cuisine', 'cuisines'], modules: ['Recipes'] },
   { label: 'status', phrases: ['status', 'task status', 'attendance status', 'completed', 'completion'], modules: ['Tasks', 'Attendance'] },
+  { label: 'date', phrases: ['date', 'attendance date'], modules: ['Attendance'] },
   { label: 'due date', phrases: ['due date', 'due dates', 'deadline', 'deadlines'], modules: ['Tasks'] },
   { label: 'priority', phrases: ['priority', 'priorities'], modules: ['Tasks'] },
 ];

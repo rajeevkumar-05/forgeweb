@@ -4,10 +4,12 @@ import type {
   ArchitectureDraft, ArchitectureRequest, DatabaseDesign, DatabaseRequest, EngineFailureCode,
   EngineMetadata, EngineResult, GenerationEngine, PlanningFolder, PlanningRequest, RequirementsAnalysis,
 } from "../engine.ts";
-import type { RequirementSpec } from "./upstream/shared/types/requirement.ts";
+import type { RequirementSemantics, RequirementSpec } from "./upstream/shared/types/requirement.ts";
 import type { ArchitecturePlan as NexArchitecturePlan } from "./upstream/shared/types/architecture.ts";
 import { analyzeRequirements, designDatabase, planArchitecture } from "./upstream/planning.ts";
 import { databaseTargetContract, MYSQL_PLANNING_PROFILE, POSTGRESQL_APPLICATION_PROFILE, resolveDatabaseTarget } from "../targets.ts";
+import { planDatabase } from "./upstream/modules/architecture/lib/database-planner.ts";
+import { semanticDesign } from "./semantic-design.ts";
 
 export const NEXARCH_PLANNING_PROFILE = MYSQL_PLANNING_PROFILE;
 export const NEXARCH_POSTGRESQL_PLANNING_PROFILE = POSTGRESQL_APPLICATION_PROFILE;
@@ -63,12 +65,7 @@ function specFromAnalysis(analysis: RequirementsAnalysis): RequirementSpec | nul
     authentication: [...f.authentication], integrations: [...f.integrations], missingRequirements: [...f.missingRequirements],
     functionalRequirements: f.functionalRequirements && [...f.functionalRequirements],
     constraints: f.constraints && [...f.constraints],
-    semantics: f.semantics && {
-      operations: f.semantics.operations.map(item => ({ action: item.action, modules: [...item.modules] })),
-      fields: f.semantics.fields.map(item => ({ name: item.name, modules: [...item.modules] })),
-      exclusions: f.semantics.exclusions.map(item => ({ ...item, modules: item.modules && [...item.modules] })),
-      evidence: f.semantics.evidence.map(item => ({ ...item })),
-    },
+    semantics: f.semantics && structuredClone(f.semantics) as RequirementSemantics | undefined,
   };
 }
 
@@ -77,10 +74,12 @@ function adaptArchitecture(plan: NexArchitecturePlan, markdown: string, analysis
   const requirementIds = new Map(analysis.proposedRequirements.map((requirement, index) => [requirement.title.replace(/^Manage /, ""), `REQ-${String(index + 1).padStart(3, "0")}`]));
   const apiEndpoints = plan.apiModules.flatMap((module) => module.endpoints.map((endpoint) => ({
     method: endpoint.method, path: endpoint.path, description: endpoint.description, auth: endpoint.auth,
+    module: module.module, ...(module.entity ? { entity: module.entity } : {}),
     roles: endpoint.roles ? [...endpoint.roles] : [],
     requirementIds: [requirementIds.get(module.module === "Auth" ? "Authentication" : module.module)].filter((id): id is string => Boolean(id)),
   })));
   return {
+    ...(plan.semantics ? { semantics: structuredClone(plan.semantics) } : {}),
     context: analysis.context,
     projection: {
       systemShape: plan.decisions.architecture.choice,
@@ -106,10 +105,12 @@ function adaptArchitecture(plan: NexArchitecturePlan, markdown: string, analysis
 
 function adaptDatabase(design: ReturnType<PlanningBackend["designDatabase"]>): DatabaseDesign {
   return {
+    ...(design.semantics ? { semantics: structuredClone(design.semantics) } : {}),
     dialect: design.meta.engine,
     target: databaseTargetContract(design.target),
     entities: design.tables.map((table) => ({
       name: table.entity, tableName: table.tableName, primaryKey: table.primaryKey,
+      ...(table.semantic ? { semantic: structuredClone(table.semantic) } : {}),
       fields: table.columns.map((column) => ({ name: column.name, type: column.sqlType, prismaType: column.prismaType, prismaNativeType: column.prismaNativeType, nullable: column.nullable, primaryKey: column.primaryKey, unique: column.unique, defaultExpression: column.defaultExpression, onUpdateNow: column.onUpdateNow, references: column.references && { ...column.references }, enumValues: column.enumValues && [...column.enumValues], enumDatabaseType: column.enumDatabaseType, nonNegative: column.nonNegative, format: column.format, description: column.description })),
       indexes: table.indexes.map((index) => ({ name: index.name, columns: [...index.columns], unique: index.unique })),
       softDelete: table.softDelete,
@@ -165,6 +166,8 @@ export class NexArchPlanningAdapter implements Pick<GenerationEngine, "analyzeRe
       const result = this.backend.analyzeRequirements(request.prompt);
       if (result.status === "INCOMPLETE") return success({ proposedRequirements: [], questions: [...result.questions], context: contextFor(request) });
       const spec = result.spec;
+      const target = resolveDatabaseTarget(request.databaseDialect, request.options.targetProfile);
+      const semantics = spec.semantics && { ...structuredClone(spec.semantics), design: semanticDesign(spec, planDatabase(spec, target).entities) };
       const modules = spec.modules.filter(module => !["Dashboard", "Settings"].includes(module));
       return success({
         proposedRequirements: modules.map((module, index) => {
@@ -190,7 +193,7 @@ export class NexArchPlanningAdapter implements Pick<GenerationEngine, "analyzeRe
         }),
         questions: [],
         context: contextFor(request),
-        facets: { productName: spec.projectName, projectType: spec.projectType, roles: [...spec.roles], modules: [...spec.modules], frontend: [...spec.frontend], backend: [...spec.backend], entities: [...spec.database], authentication: [...spec.authentication], integrations: [...spec.integrations], missingRequirements: [...spec.missingRequirements], functionalRequirements: [...(spec.functionalRequirements ?? [])], constraints: [...(spec.constraints ?? [])], semantics: spec.semantics && structuredClone(spec.semantics) },
+        facets: { productName: spec.projectName, projectType: spec.projectType, roles: [...spec.roles], modules: [...spec.modules], frontend: [...spec.frontend], backend: [...spec.backend], entities: [...spec.database], authentication: [...spec.authentication], integrations: [...spec.integrations], missingRequirements: [...spec.missingRequirements], functionalRequirements: [...(spec.functionalRequirements ?? [])], constraints: [...(spec.constraints ?? [])], semantics },
       });
     } catch (error) { return catchFailure(error, "analysis"); }
   }
@@ -220,7 +223,8 @@ export class NexArchPlanningAdapter implements Pick<GenerationEngine, "analyzeRe
       const { plan, markdown } = this.backend.planArchitecture(spec, target);
       const expected = adaptArchitecture(plan, markdown, request.analysis);
       if (digest(JSON.stringify(request.architecture.structure)) !== digest(JSON.stringify(expected.structure))
-        || digest(JSON.stringify(request.architecture.endpoints)) !== digest(JSON.stringify(expected.endpoints))) {
+        || digest(JSON.stringify(request.architecture.endpoints)) !== digest(JSON.stringify(expected.endpoints))
+        || digest(JSON.stringify(request.architecture.semantics ?? null)) !== digest(JSON.stringify(expected.semantics ?? null))) {
         return failure("validation_failure", "database-design", "Architecture does not match the analyzed requirements");
       }
       if (plan.database.engine !== target.engine) return failure("unsupported_capability", "database-design", "Planner database dialect does not match the selected target");

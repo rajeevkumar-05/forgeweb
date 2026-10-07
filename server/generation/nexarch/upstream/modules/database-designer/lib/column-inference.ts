@@ -42,11 +42,12 @@ export function inferColumn(
   entity: string,
   field: ParsedField,
   context: InferenceContext,
+  allowUnknownEnum = true,
 ): ColumnDesign {
   const { name, unique } = field;
 
   // Enum-backed state columns come first: they override generic string rules.
-  if (ENUM_COLUMNS.has(name)) {
+  if (ENUM_COLUMNS.has(name) && (allowUnknownEnum || resolveEnumValues(entity, name) || (name === 'role' && context.roleEnumValues?.length))) {
     const roleValues =
       name === 'role' && context.roleEnumValues && context.roleEnumValues.length > 0
         ? context.roleEnumValues

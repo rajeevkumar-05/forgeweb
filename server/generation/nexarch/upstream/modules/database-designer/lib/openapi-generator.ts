@@ -273,7 +273,7 @@ function buildPaths(
   const tableByEntity = new Map(design.tables.map((t) => [t.entity, t]));
 
   for (const module of modules) {
-    const entity = tableByEntity.get(module.module);
+    const entity = tableByEntity.get(module.entity ?? module.module);
     for (const endpoint of module.endpoints) {
       const key = toOpenApiPath(endpoint.path);
       const item: OpenApiPathItem = paths[key] ?? {};

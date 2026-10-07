@@ -11,6 +11,8 @@ export interface RequirementEvidence {
   phrase: string;
   clause: string;
   polarity: 'included' | 'excluded';
+  /** Explicit field-declaration subject, retained across its bullet list. */
+  fieldContext?: string;
 }
 
 export interface RequirementSemantics {
@@ -18,6 +20,54 @@ export interface RequirementSemantics {
   fields: { name: string; modules: string[] }[];
   exclusions: { kind: RequirementEvidenceKind; label: string; modules?: string[] }[];
   evidence: RequirementEvidence[];
+  /** Optional downstream design facts; absence preserves the legacy contract. */
+  design?: SemanticDesign;
+}
+
+export type SemanticSource = 'known' | 'inferred';
+export type SemanticSupport = 'unverified' | 'unsupported';
+export interface SemanticField {
+  name: string;
+  label?: string;
+  description?: string;
+  source: SemanticSource;
+  /** Omitted means unknown, not an assumed string/required/searchable field. */
+  category?: 'string' | 'text' | 'number' | 'boolean' | 'date' | 'timestamp' | 'enum' | 'json' | 'relation';
+  required?: boolean;
+  searchable?: boolean;
+  relationTarget?: string;
+}
+export interface SemanticOperation {
+  name: string;
+  action: 'create' | 'read' | 'update' | 'delete' | 'domain';
+  intent: 'requested' | 'excluded';
+  source: SemanticSource;
+  support: SemanticSupport;
+}
+export interface SemanticEntity {
+  name: string;
+  description?: string;
+  fields: SemanticField[];
+  relationships: { target: string; field?: string; kind?: 'many-to-one' | 'one-to-one'; source: SemanticSource }[];
+  operations: SemanticOperation[];
+  /** An empty unspecified list is not an explicit read-only/no-operation policy. */
+  operationPolicy: 'explicit' | 'unspecified';
+}
+export interface SemanticDesign {
+  version: 'nexarch-semantic-design-v1';
+  projectType: string;
+  roles: { name: string; source: SemanticSource }[];
+  modules: { name: string; entity?: string; entities: string[]; source: SemanticSource }[];
+  entities: SemanticEntity[];
+  /** Missing entries mean not requested; exclusions are never positive support. */
+  capabilities: {
+    kind: 'integration' | 'authentication' | 'backend' | 'frontend';
+    name: string;
+    intent: 'requested' | 'excluded';
+    source: SemanticSource;
+    support: SemanticSupport;
+  }[];
+  exclusions: { kind: RequirementEvidenceKind | 'entity'; name: string; modules?: string[]; source: SemanticSource }[];
 }
 
 export interface RequirementSpec {

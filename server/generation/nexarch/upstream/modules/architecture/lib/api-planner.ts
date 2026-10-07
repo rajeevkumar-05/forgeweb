@@ -8,6 +8,7 @@ import type { RequirementSpec } from '../../../shared/types/requirement.ts';
 import { kebabCase, singularize } from '../../../shared/utils/strings.ts';
 import type { ApiEndpoint, ApiModulePlan } from '../architecture.types.ts';
 import { dataModules, hasModule } from './common.ts';
+import { crudOperations, operationForMethod } from '../../../shared/utils/operations.ts';
 
 function authEndpoints(spec: RequirementSpec): ApiEndpoint[] {
   const endpoints: ApiEndpoint[] = [
@@ -133,10 +134,13 @@ export function planApi(spec: RequirementSpec): ApiModulePlan[] {
 
   for (const module of dataModules(spec)) {
     const specialized = specializedEndpoints(module);
+    const entityName = spec.semantics?.design?.modules.find(item => item.name === module)?.entity ?? module;
+    const semantic = spec.semantics?.design?.entities.find(item => item.name === entityName);
+    const operations = crudOperations(semantic);
     plans.push({
       module,
       basePath: `/${kebabCase(module)}`,
-      endpoints: specialized ?? crudEndpoints(module),
+      endpoints: specialized ?? crudEndpoints(module).filter(endpoint => operations.includes(operationForMethod(endpoint.method))),
     });
   }
 
@@ -183,6 +187,8 @@ export function planApi(spec: RequirementSpec): ApiModulePlan[] {
     });
   }
 
-  return plans;
+  return plans.map(plan => {
+    const entity = spec.semantics?.design?.modules.find(module => module.name === plan.module)?.entity;
+    return { ...plan, ...(entity ? { entity } : {}) };
+  });
 }
-

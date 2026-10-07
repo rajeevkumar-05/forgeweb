@@ -11,6 +11,8 @@
  * listing.
  */
 
+import type { RequirementSemantics, SemanticEntity } from './requirement.ts';
+
 export interface ArchitectureDecision {
   choice: string;
   reasoning: string;
@@ -49,6 +51,8 @@ export interface ApiEndpoint {
 
 export interface ApiModulePlan {
   module: string;
+  /** Stable persistence identity, independent of the module's display name. */
+  entity?: string;
   basePath: string;
   endpoints: ApiEndpoint[];
 }
@@ -63,6 +67,7 @@ export interface EntityRelation {
 
 export interface EntityPlan {
   name: string;
+  semantic?: SemanticEntity;
   tableName: string;
   primaryKey: string;
   /** Representative columns; full column design is the Database Designer's job. */
@@ -158,6 +163,7 @@ export interface NonFunctionalReport {
 /* ── The assembled plan ──────────────────────────────────────────────── */
 
 export interface ArchitecturePlan {
+  semantics?: RequirementSemantics;
   meta: {
     projectName: string;
     projectType: string;
@@ -176,4 +182,3 @@ export interface ArchitecturePlan {
   futureScalability: ScalabilityRecommendation[];
   nonFunctional: NonFunctionalReport;
 }
-

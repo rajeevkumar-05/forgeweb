@@ -20,7 +20,7 @@ import type {
   OpenApiOperation,
   TableDesign,
 } from '../../../shared/types/design.ts';
-import type { RequirementSpec } from '../../../shared/types/requirement.ts';
+import type { RequirementSemantics, RequirementSpec, SemanticEntity } from '../../../shared/types/requirement.ts';
 import { camelCase, kebabCase, pascalCase, singularize } from '../../../shared/utils/strings.ts';
 
 export type EndpointKind = 'list' | 'read' | 'create' | 'update' | 'patch' | 'remove' | 'custom';
@@ -41,6 +41,8 @@ export interface EndpointModel {
 }
 
 export interface ModuleModel {
+  /** Requested behavior, separate from currently emitted generic endpoints. */
+  semantic?: SemanticEntity;
   /** kebab-case module + folder name, e.g. `order-items`. */
   name: string;
   /** PascalCase class prefix, e.g. `OrderItems`. */
@@ -61,6 +63,7 @@ export interface ModuleModel {
 }
 
 export interface ProjectModel {
+  semantics?: RequirementSemantics;
   projectName: string;
   projectType: string;
   apiPrefix: string;
@@ -199,7 +202,8 @@ export function buildProjectModel(
 
   for (const tag of openapi.tags.map((t) => t.name)) {
     const basePath = moduleBasePath(tag, openapi);
-    const entity = tableByEntity.get(tag) ?? null;
+    const entityName = architecture.apiModules.find(module => module.module === tag)?.entity ?? tag;
+    const entity = tableByEntity.get(entityName) ?? null;
 
     const endpoints: EndpointModel[] = [];
     for (const [openapiPath, item] of Object.entries(openapi.paths)) {
@@ -227,6 +231,7 @@ export function buildProjectModel(
     const metadata = entity ? (metadataByEntity.get(entity.entity) ?? null) : null;
 
     modules.push({
+      ...(entity?.semantic ? { semantic: structuredClone(entity.semantic) } : {}),
       name: kebabCase(tag),
       className: pascalCase(tag),
       basePath,
@@ -252,6 +257,7 @@ export function buildProjectModel(
   }
 
   return {
+    ...(requirements.semantics ? { semantics: structuredClone(requirements.semantics) } : {}),
     projectName: architecture.meta.projectName,
     projectType: architecture.meta.projectType,
     apiPrefix: '/api/v1',

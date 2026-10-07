@@ -12,7 +12,7 @@ import { generatePrismaSchema } from "./upstream/modules/database-designer/lib/p
 import { generateValidationRules } from "./upstream/modules/database-designer/lib/validation-generator.ts";
 import type { ArchitectureDecision, ArchitecturePlan, ApiModulePlan } from "./upstream/shared/types/architecture.ts";
 import type { DatabaseDesign } from "./upstream/shared/types/design.ts";
-import type { RequirementSpec } from "./upstream/shared/types/requirement.ts";
+import type { RequirementSemantics, RequirementSpec } from "./upstream/shared/types/requirement.ts";
 import { camelCase, kebabCase, pascalCase } from "./upstream/shared/utils/strings.ts";
 
 export const NEXARCH_BACKEND_REVISION = "398f4cbd9e314954eda95540411ed4d06cd50cf3";
@@ -44,6 +44,7 @@ export function upstreamDatabase(request: GenerationRequest): DatabaseDesign {
     throw new TypeError("Database design does not match the verified PostgreSQL target");
   }
   const tables = source.entities.map((entity) => ({
+    ...(entity.semantic ? { semantic: structuredClone(entity.semantic) as DatabaseDesign["tables"][number]["semantic"] } : {}),
     entity: entity.name,
     tableName: entity.tableName ?? "",
     primaryKey: entity.primaryKey ?? "",
@@ -78,9 +79,10 @@ export function upstreamDatabase(request: GenerationRequest): DatabaseDesign {
     indexes: (entity.indexes ?? []).map((index) => ({ ...index, columns: [...index.columns], rationale: `Approved index ${index.name}.` })),
   }));
   return {
+    ...(source.semantics ? { semantics: structuredClone(source.semantics) as RequirementSemantics } : {}),
     meta: {
       projectName: request.approved.specification.productName,
-      projectType: "ForgeWeb application",
+      projectType: request.approved.specification.projectType ?? source.semantics?.design?.projectType ?? "ForgeWeb application",
       engine: target.engine,
       databaseVersion: source.metadata?.version ?? target.version,
       normalForm: source.metadata?.normalForm ?? "3NF",
@@ -106,6 +108,7 @@ export function upstreamDatabase(request: GenerationRequest): DatabaseDesign {
 
 function endpointModule(path: string, candidates: readonly string[]): string {
   const segment = path.split("/").filter(Boolean)[0] ?? "api";
+  if (segment === "auth") return "Authentication";
   const normalized = segment.replace(/[^a-z0-9]/gi, "").toLowerCase();
   const matched = candidates.find((candidate) => {
     const name = kebabCase(candidate).replace(/-/g, "");
@@ -119,9 +122,9 @@ function apiModules(request: GenerationRequest): ApiModulePlan[] {
   const candidates = [...new Set([...(architecture.structure?.services.map((service) => service.module) ?? []), ...architecture.projection.backend.modules])];
   const modules = new Map<string, ApiModulePlan>();
   for (const endpoint of architecture.endpoints) {
-    const module = endpointModule(endpoint.path, candidates);
+    const module = endpoint.module ?? endpointModule(endpoint.path, candidates);
     const basePath = `/${endpoint.path.split("/").filter(Boolean)[0] ?? kebabCase(module)}`;
-    const entry = modules.get(module) ?? { module, basePath, endpoints: [] };
+    const entry = modules.get(module) ?? { module, basePath, ...(endpoint.entity ? { entity: endpoint.entity } : {}), endpoints: [] };
     entry.endpoints.push({
       method: endpoint.method.toUpperCase() as ApiModulePlan["endpoints"][number]["method"],
       path: endpoint.path,
@@ -143,7 +146,8 @@ export function upstreamArchitecture(request: GenerationRequest, database: Datab
   const source = request.design.architecture;
   const modules = apiModules(request);
   return {
-    meta: { projectName: request.approved.specification.productName, projectType: "ForgeWeb application", generatedAt: request.approved.specification.confirmedAt, planner: "forgeweb-nexarch-adapter" },
+    ...(source.semantics ? { semantics: structuredClone(source.semantics) as RequirementSemantics } : {}),
+    meta: { projectName: request.approved.specification.productName, projectType: request.approved.specification.projectType ?? source.semantics?.design?.projectType ?? "ForgeWeb application", generatedAt: request.approved.specification.confirmedAt, planner: "forgeweb-nexarch-adapter" },
     decisions: {
       architecture: decision(source.projection.systemShape), frontendArchitecture: decision(source.projection.frontend.framework),
       backendArchitecture: decision(source.projection.backend.runtime), database: decision(database.target.engine),
@@ -162,10 +166,13 @@ export function upstreamArchitecture(request: GenerationRequest, database: Datab
 
 export function upstreamRequirements(request: GenerationRequest): RequirementSpec {
   const specification = request.approved.specification;
+  const semantics = specification.semantics ?? request.design.architecture.semantics;
   return {
-    projectName: specification.productName, projectType: "ForgeWeb application", roles: [...specification.roles],
+    ...(semantics ? { semantics: structuredClone(semantics) as RequirementSemantics } : {}),
+    ...(specification.constraints ? { constraints: [...specification.constraints] } : {}),
+    projectName: specification.productName, projectType: specification.projectType ?? semantics?.design?.projectType ?? "ForgeWeb application", roles: [...specification.roles],
     modules: [...request.design.architecture.projection.backend.modules], frontend: [], backend: [request.design.architecture.projection.backend.runtime],
-    database: [...specification.entities], authentication: [], integrations: [], missingRequirements: [...specification.assumptions],
+    database: [...specification.entities], authentication: [...(specification.authentication ?? [])], integrations: [...(specification.integrations ?? [])], missingRequirements: [...specification.assumptions],
     goal: specification.summary, functionalRequirements: specification.requirements.map((requirement) => requirement.description),
     acceptanceCriteria: specification.requirements.flatMap((requirement) => requirement.acceptanceCriteria), assumptions: [...specification.assumptions],
   };

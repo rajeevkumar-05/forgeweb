@@ -93,6 +93,7 @@ export class DockerInfrastructure {
   private readonly resources = new Set<string>();
   private readonly images = new Set<string>();
   private readonly gateways = new Set<Server>();
+  private readonly removals = new Map<string, Promise<void>>();
   private closed = false;
 
   constructor(baseImage = "forgeweb-worker:local", command: DockerCommand = dockerCommand()) {
@@ -188,17 +189,30 @@ export class DockerInfrastructure {
   }
 
   async removeContainer(name: string): Promise<void> {
-    if (!this.resources.has(name)) return;
-    const removed = await this.command(["rm", "--force", "--volumes", name], 10_000).catch(() => ({ code: 1, stdout: "" }));
-    if (removed.code === 0) this.resources.delete(name);
-    else throw new Error("DOCKER_CONTAINER_CLEANUP_FAILED");
+    await this.removeOnce(`container:${name}`, async () => {
+      if (!this.resources.has(name)) return;
+      const removed = await this.command(["rm", "--force", "--volumes", name], 10_000).catch(() => ({ code: 1, stdout: "" }));
+      if (removed.code === 0) this.resources.delete(name);
+      else throw new Error("DOCKER_CONTAINER_CLEANUP_FAILED");
+    });
   }
 
   async removeImage(image: PreparedImage): Promise<void> {
-    if (!this.images.has(image.tag)) return;
-    const removed = await this.command(["image", "rm", "--force", image.tag], 10_000).catch(() => ({ code: 1, stdout: "" }));
-    if (removed.code === 0) this.images.delete(image.tag);
-    else throw new Error("DOCKER_IMAGE_CLEANUP_FAILED");
+    await this.removeOnce(`image:${image.tag}`, async () => {
+      if (!this.images.has(image.tag)) return;
+      const removed = await this.command(["image", "rm", "--force", image.tag], 10_000).catch(() => ({ code: 1, stdout: "" }));
+      if (removed.code === 0) this.images.delete(image.tag);
+      else throw new Error("DOCKER_IMAGE_CLEANUP_FAILED");
+    });
+  }
+
+  private async removeOnce(key: string, operation: () => Promise<void>): Promise<void> {
+    const pending = this.removals.get(key);
+    if (pending) return pending;
+    const task = operation();
+    this.removals.set(key, task);
+    try { await task; }
+    finally { this.removals.delete(key); }
   }
 
   registerGateway(server: Server): void { this.gateways.add(server); }
@@ -275,6 +289,45 @@ export class DockerDisposablePostgresProvider implements DisposablePostgresProvi
 const bridge = `let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',async()=>{try{const q=JSON.parse(input);const r=await fetch('http://127.0.0.1:8080'+q.path,{method:q.method,headers:q.headers,body:['GET','HEAD'].includes(q.method)?undefined:Buffer.from(q.body,'base64'),signal:AbortSignal.timeout(8000),redirect:'manual'});const b=Buffer.from(await r.arrayBuffer());if(b.length>2000000)process.exit(1);console.log(JSON.stringify({status:r.status,type:r.headers.get('content-type'),body:b.toString('base64')}));}catch{process.exit(1)}});`;
 
 export type PreviewTls = { readonly certificatePath: string; readonly keyPath: string; readonly ttlMs?: number };
+export function runtimePreviewSessionBudget(tls: PreviewTls, policy: IsolatedRunnerPolicy): number {
+  const ttlMs = tls.ttlMs ?? 60_000;
+  if (!Number.isSafeInteger(ttlMs) || ttlMs < 1_000 || ttlMs > 300_000) throw new Error("PREVIEW_SESSION_BUDGET_INVALID");
+  return Math.min(ttlMs, policy.resources.cpuMillis);
+}
+export class PreviewRequestGate {
+  private active = 0;
+  private readonly pending: (() => void)[] = [];
+
+  async acquire(signal?: AbortSignal): Promise<(() => void) | undefined> {
+    if (signal?.aborted) return undefined;
+    if (this.active >= 2) {
+      if (this.pending.length >= 8) return undefined;
+      const granted = await new Promise<boolean>((done) => {
+        const finish = (value: boolean) => {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", abort);
+          const index = this.pending.indexOf(grant);
+          if (index >= 0) this.pending.splice(index, 1);
+          done(value);
+        };
+        const grant = () => { this.active++; finish(true); };
+        const abort = () => finish(false);
+        const timer = setTimeout(abort, 10_000);
+        timer.unref();
+        this.pending.push(grant);
+        signal?.addEventListener("abort", abort, { once: true });
+      });
+      if (!granted) return undefined;
+    } else this.active++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.active--;
+      this.pending.shift()?.();
+    };
+  }
+}
 export class DockerRuntimePreviewExecutor implements RuntimePreviewExecutor {
   private readonly docker: DockerInfrastructure;
   private readonly tls: PreviewTls;
@@ -282,6 +335,7 @@ export class DockerRuntimePreviewExecutor implements RuntimePreviewExecutor {
 
   async start(request: AcceptedRuntimePreviewRequest): Promise<RuntimePreviewExecution> {
     dockerIsolationArguments(request.policy);
+    const sessionBudgetMs = runtimePreviewSessionBudget(this.tls, request.policy);
     const deadline = Date.now() + Math.min(110_000, request.policy.timeoutMs - 500);
     const [cert, key] = await Promise.all([readFile(this.tls.certificatePath), readFile(this.tls.keyPath)]);
     let image: PreparedImage | undefined;
@@ -304,7 +358,7 @@ export class DockerRuntimePreviewExecutor implements RuntimePreviewExecutor {
       const token = randomBytes(32).toString("hex");
       const cookieName = `forgeweb_preview_${randomBytes(8).toString("hex")}`;
       const name = container;
-      let active = 0;
+      const gate = new PreviewRequestGate();
       gateway = createServer({ cert, key }, async (incoming, response) => {
         response.setHeader("Cache-Control", "no-store");
         response.setHeader("Referrer-Policy", "no-referrer");
@@ -315,8 +369,13 @@ export class DockerRuntimePreviewExecutor implements RuntimePreviewExecutor {
           response.end(); return;
         }
         if (!incoming.headers.cookie?.split(";").some((cookie) => cookie.trim() === `${cookieName}=${token}`)) { response.writeHead(401); response.end(); return; }
-        if (!incoming.url?.startsWith("/") || incoming.url.startsWith("//") || active >= 2) { response.writeHead(429); response.end(); return; }
-        active++;
+        if (!incoming.url?.startsWith("/") || incoming.url.startsWith("//")) { response.writeHead(429); response.end(); return; }
+        const cancellation = new AbortController();
+        const cancel = () => cancellation.abort();
+        response.once("close", cancel);
+        const release = await gate.acquire(cancellation.signal);
+        response.removeListener("close", cancel);
+        if (!release) { if (!response.destroyed) { response.writeHead(429); response.end(); } return; }
         try {
           const chunks: Buffer[] = [];
           let bytes = 0;
@@ -338,7 +397,7 @@ export class DockerRuntimePreviewExecutor implements RuntimePreviewExecutor {
           response.writeHead(result.status, { "Content-Type": result.type || "application/octet-stream" });
           response.end(Buffer.from(result.body, "base64"));
         } catch { response.writeHead(502); response.end(); }
-        finally { active--; }
+        finally { release(); }
       });
       gateway.requestTimeout = 15_000;
       gateway.headersTimeout = 10_000;
@@ -351,7 +410,9 @@ export class DockerRuntimePreviewExecutor implements RuntimePreviewExecutor {
       const expiry = setTimeout(() => {
         finalGateway.closeAllConnections(); finalGateway.close(); this.docker.unregisterGateway(finalGateway);
         void this.docker.removeContainer(name).then(() => this.docker.removeImage(finalImage)).catch(() => undefined);
-      }, Math.min(this.tls.ttlMs ?? 60_000, this.docker.remaining(executionDeadline)));
+      // Startup has its own bounded deadline; grant the session its bounded
+      // lifetime only after the accepted application and HTTPS gateway are ready.
+      }, sessionBudgetMs);
       expiry.unref();
       gateway.once("close", () => clearTimeout(expiry));
       keep = true;

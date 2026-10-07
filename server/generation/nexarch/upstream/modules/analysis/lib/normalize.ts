@@ -20,26 +20,48 @@ export interface PhraseMention {
   phrase: string;
   clause: string;
   polarity: 'included' | 'excluded';
+  fieldContext?: string;
 }
 
 /** Retain sentence/contrast boundaries before ordinary matching discards punctuation. */
 export function clauses(text: string): string[] {
   return text
     .replace(/\bnot only\b/gi, 'also')
-    .split(/[.!?;:\n]+|\b(?:but|however|yet)\b|,\s*(?=(?:no|not|without)\b)|(?:,\s*|\band\s+)(?=(?:(?:[a-z]+\s+){1,3}(?:can|should|must|will|do|does)\b|(?:must|should|do|does)\s+not\b))/i)
+    .split(/[.!?;:\n]+|\b(?:but|however|yet)\b|,\s*(?=(?:no|not|without)\b)|(?:,\s*|\band\s+)(?=(?:(?:[a-z]+\s+){1,3}(?:can|should|must|will|do|does|has|have|contains|includes)\b|(?:must|should|do|does)\s+not\b))/i)
     // Positive verb lists share their trailing object. Split an imperative
     // only when it follows a negative clause and would otherwise inherit it.
     .flatMap(clause => /\b(?:no|not|without|exclude|omit)\b/.test(normalize(clause))
-      ? clause.split(/(?:,\s*|\band\s+)(?=(?:send|include|support|enable|create|edit|update|delete|view|assign|track|search)\b)/i)
+      ? clause.split(/(?:,\s*|\band\s+)(?=(?:send|include|support|enable|create|edit|update|delete|view|assign|complete|finish|record|track|search)\b)/i)
       : [clause])
     .map(normalize)
     .filter(Boolean);
 }
 
+/** Keep list ownership local to an explicit heading, never to a domain default. */
+function contextualClauses(text: string): { clause: string; fieldContext?: string }[] {
+  const result: { clause: string; fieldContext?: string }[] = [];
+  let listContext: string | undefined;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const bullet = /^\s*(?:[-*]|\d+[.)])\s+/.test(line);
+    if (!bullet) listContext = undefined;
+    const parts = clauses(line);
+    for (const [index, clause] of parts.entries()) {
+      const declaration = /^(.+?)\b(?:has|have|contains?|includes?)\b/.exec(clause);
+      const fieldContext = declaration?.[1].trim() || (bullet ? listContext : undefined);
+      result.push({ clause, ...(fieldContext ? { fieldContext } : {}) });
+      if (!bullet && index === parts.length - 1 && /:\s*$/.test(line)) {
+        listContext = fieldContext ?? clause.replace(/\s+(?:fields|attributes|properties)$/, '').trim();
+      }
+    }
+  }
+  return result;
+}
+
 /** Bounded polarity detection, not a general language parser. Keep both sides of conflicts. */
 export function phraseMentions(text: string, phrases: readonly string[], negatedPredicates: readonly string[] = []): PhraseMention[] {
   const mentions: PhraseMention[] = [];
-  for (const clause of clauses(text)) {
+  for (const { clause, fieldContext } of contextualClauses(text)) {
     for (const phrase of phrases) {
       const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const expression = new RegExp(`\\b${escaped}\\b`, 'g');
@@ -52,7 +74,7 @@ export function phraseMentions(text: string, phrases: readonly string[], negated
         const deniesPredicate = governed && negatedPredicates.some(predicate => containsPhrase(governed, predicate));
         const prefixNegative = Boolean(negativeCue && !deniesPredicate);
         const suffixNegative = /^\s+(?:(?:and|or)\s+[a-z ]+\s+)?(?:is|are|was|were|should be|must be)\s+(?:not\s+(?:needed|required|included|supported|wanted)|excluded|unnecessary)\b/.test(after);
-        mentions.push({ phrase, clause, polarity: prefixNegative || suffixNegative ? 'excluded' : 'included' });
+        mentions.push({ phrase, clause, polarity: prefixNegative || suffixNegative ? 'excluded' : 'included', ...(fieldContext ? { fieldContext } : {}) });
       }
     }
   }

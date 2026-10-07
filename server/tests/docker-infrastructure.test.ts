@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { DockerDisposablePostgresProvider, DockerInfrastructure, DockerRuntimePreviewExecutor, DockerSandboxExecutor, dependencyManifest, dockerCommand, dockerIsolationArguments, dockerWorkflowFromEnvironment, validateDockerSnapshot } from "../generation/docker-infrastructure.ts";
+import { DockerDisposablePostgresProvider, DockerInfrastructure, DockerRuntimePreviewExecutor, DockerSandboxExecutor, PreviewRequestGate, dependencyManifest, dockerCommand, dockerIsolationArguments, dockerWorkflowFromEnvironment, runtimePreviewSessionBudget, validateDockerSnapshot } from "../generation/docker-infrastructure.ts";
 import type { DockerCommand } from "../generation/docker-infrastructure.ts";
 import { ForgeWebIsolatedRunner, isolatedExecutionRequest, isolatedRunnerPolicy } from "../generation/runner.ts";
 import { disposablePostgresRequest } from "../generation/postgres-validation.ts";
@@ -213,12 +213,79 @@ test("cleanup failure cannot be attested as successful database validation", asy
   await assert.rejects(() => docker.dispose(), /DOCKER_CLEANUP_INCOMPLETE/);
 });
 
+test("runtime expiry and disposal share in-flight container and image cleanup", async () => {
+  const fixture = commandFixture();
+  const docker = new DockerInfrastructure("forgeweb-worker:local", fixture.command);
+  const image = await docker.prepare(files(), Date.now() + 10_000);
+  const container = await docker.run(image, "runtime", isolatedRunnerPolicy(), Date.now() + 10_000, true);
+  await Promise.all([
+    docker.removeContainer(container.name).then(() => docker.removeImage(image)),
+    docker.removeContainer(container.name).then(() => docker.removeImage(image)),
+    docker.dispose(),
+  ]);
+  assert.equal(fixture.calls.filter(args => args[0] === "rm").length, 1);
+  assert.equal(fixture.calls.filter(args => args[0] === "image" && args[1] === "rm" && args.includes(image.tag)).length, 1);
+});
+
 test("preview requires actual TLS files, never an HTTP fallback", async () => {
   const fixture = commandFixture();
   const docker = new DockerInfrastructure("forgeweb-worker:local", fixture.command);
   const executor = new DockerRuntimePreviewExecutor(docker, { certificatePath: "missing-forgeweb-test-cert", keyPath: "missing-forgeweb-test-key" });
   await assert.rejects(() => executor.start({ policy: isolatedRunnerPolicy() } as never));
   assert.equal(fixture.calls.length, 0);
+});
+
+test("ready preview sessions retain a bounded lifetime independent of startup time", () => {
+  const tls = { certificatePath: "operator-cert", keyPath: "operator-key" };
+  const policy = isolatedRunnerPolicy();
+  assert.equal(runtimePreviewSessionBudget(tls, policy), 60_000);
+  assert.equal(runtimePreviewSessionBudget({ ...tls, ttlMs: 10_000 }, policy), 10_000);
+  assert.equal(runtimePreviewSessionBudget({ ...tls, ttlMs: 300_000 }, policy), 60_000);
+  assert.equal(runtimePreviewSessionBudget(tls, isolatedRunnerPolicy(120_000, 5_000)), 5_000);
+  for (const ttlMs of [0, -1, 999, 300_001, NaN, Infinity, 1000.5]) {
+    assert.throws(() => runtimePreviewSessionBudget({ ...tls, ttlMs }, policy), /PREVIEW_SESSION_BUDGET_INVALID/);
+  }
+  assert.ok(dockerIsolationArguments(policy).includes("cpu=60:60"));
+});
+
+test("preview asset bursts queue without exceeding two active forwards", async () => {
+  const gate = new PreviewRequestGate();
+  const first = (await gate.acquire())!;
+  const second = (await gate.acquire())!;
+  let granted = false;
+  const waiting = gate.acquire().then(release => { granted = true; return release!; });
+  await Promise.resolve();
+  assert.equal(granted, false);
+  first();
+  const third = await waiting;
+  assert.equal(granted, true);
+  second(); third();
+});
+
+test("preview queue denies overflow and releases cancelled requests", async () => {
+  const gate = new PreviewRequestGate();
+  const first = (await gate.acquire())!;
+  const second = (await gate.acquire())!;
+  const cancellation = new AbortController();
+  const pending = Array.from({ length: 8 }, () => gate.acquire(cancellation.signal));
+  assert.equal(await gate.acquire(), undefined);
+  cancellation.abort();
+  assert.ok((await Promise.all(pending)).every(release => release === undefined));
+  first(); first(); second();
+  const release = await gate.acquire();
+  assert.ok(release);
+  release();
+});
+
+test("preview queue wait expires without forwarding when its bound is exhausted", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const gate = new PreviewRequestGate();
+  const first = (await gate.acquire())!;
+  const second = (await gate.acquire())!;
+  const waiting = gate.acquire();
+  t.mock.timers.tick(10_000);
+  assert.equal(await waiting, undefined);
+  first(); second();
 });
 
 test("real unavailable Docker configuration blocks acceptance and workspace/version mutation", async () => {

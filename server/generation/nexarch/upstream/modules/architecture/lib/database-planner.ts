@@ -151,7 +151,22 @@ function planEntity(entity: string, present: ReadonlySet<string>): EntityPlan {
 export function planDatabase(spec: RequirementSpec, target: DatabaseTargetStrategy): DatabasePlan {
   const entityNames = spec.database.length > 0 ? spec.database : ['Users'];
   const present = new Set(entityNames);
-  const entities = entityNames.map((entity) => planEntity(entity, present));
+  const entities = entityNames.map((entity) => {
+    const semantic = spec.semantics?.design?.entities.find(item => item.name === entity);
+    const plan = planEntity(entity, present);
+    // Only explicit, stable relationship identities can add foreign keys.
+    const relationships = [...(semantic?.relationships ?? []), ...(semantic?.fields
+      .filter(field => field.relationTarget)
+      .map(field => ({ target: field.relationTarget!, field: field.name, kind: 'many-to-one' as const })) ?? [])];
+    for (const relation of relationships) {
+      if (!relation.field || !present.has(relation.target)) continue;
+      const foreignKey = snakeCase(relation.field);
+      const existing = plan.relations.find(item => item.foreignKey === foreignKey);
+      if (existing && existing.target !== relation.target) throw new Error(`Conflicting relationship: ${entity}.${foreignKey}`);
+      if (!existing) plan.relations.push({ type: relation.kind ?? 'many-to-one', target: relation.target, foreignKey });
+    }
+    return { ...plan, ...(semantic ? { semantic: structuredClone(semantic) } : {}) };
+  });
 
   const hasJoinTables = entityNames.some(
     (entity) => entity.endsWith('Items') || entity === 'Participants' || entity === 'Enrollments',

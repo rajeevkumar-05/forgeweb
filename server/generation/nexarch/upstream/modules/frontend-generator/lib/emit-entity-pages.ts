@@ -10,7 +10,7 @@
  */
 import { entitySingular } from './project-model.ts';
 import type { PageModel } from './project-model.ts';
-import { labelOf } from './type-map.ts';
+import { inputTypeOf, labelOf } from './type-map.ts';
 import type { GeneratedFile } from '../frontend-generator.types.ts';
 import { file } from './file-tree.ts';
 
@@ -29,6 +29,13 @@ function columnCell(column: PageModel['listColumns'][number]): string {
 
 function implementedPage(page: PageModel): string {
   const singular = entitySingular(page.name);
+  const create = page.operations.includes('create');
+  const update = page.operations.includes('update');
+  const remove = page.operations.includes('delete');
+  const write = create || update;
+  const unsupported = page.semantic?.operations.filter(operation => operation.intent === 'requested' && operation.support === 'unsupported').map(operation => operation.name) ?? [];
+  const icons = [create ? 'Plus' : '', update ? 'Pencil' : '', remove ? 'Trash2' : ''].filter(Boolean);
+  const hooks = [`use${page.name}List`, create ? `useCreate${singular}` : '', update ? `useUpdate${singular}` : '', remove ? `useDelete${singular}` : ''].filter(Boolean);
   const wide = page.listColumns.length > 4;
   const needsBadge = page.listColumns.some((c) => c.prismaType === 'Boolean' || c.enumValues);
   // Decided at generation time, not runtime: the emitted JSX either wraps
@@ -46,23 +53,23 @@ function implementedPage(page: PageModel): string {
 
   const imports = [
     "import { useState } from 'react';",
-    "import { Plus } from 'lucide-react';",
+    icons.length ? `import { ${icons.join(', ')} } from 'lucide-react';` : null,
     '',
     "import { PageHeader } from '@/shared/components/page-header';",
-    "import { Button } from '@/shared/components/ui/button';",
+    icons.length ? "import { Button } from '@/shared/components/ui/button';" : null,
     needsBadge ? "import { Badge } from '@/shared/components/ui/badge';" : null,
     "import { Dialog } from '@/shared/components/ui/dialog';",
-    "import { ConfirmDialog } from '@/shared/components/ui/confirm-dialog';",
+    remove ? "import { ConfirmDialog } from '@/shared/components/ui/confirm-dialog';" : null,
     "import { DataTable } from '@/shared/components/ui/data-table';",
     "import type { DataTableColumn } from '@/shared/components/ui/data-table';",
     "import { Pagination } from '@/shared/components/ui/pagination';",
     "import { SearchInput } from '@/shared/components/ui/search-input';",
     "import { ErrorState } from '@/shared/components/ui/error-state';",
     wide ? "import { FullWidthLayout } from '@/shared/layouts/full-width-layout';" : null,
-    `import { ${singular}Form } from './components/${singular}Form';`,
-    `import { use${page.name}List, useCreate${singular}, useDelete${singular}, useUpdate${singular} } from './hooks/use-${page.slug}';`,
+    write ? `import { ${singular}Form } from './components/${singular}Form';` : null,
+    `import { ${hooks.join(', ')} } from './hooks/use-${page.slug}';`,
     `import type { ${page.name}Record } from './types';`,
-    `import type { Create${singular}FormValues } from './schema';`,
+    write ? `import type { Create${singular}FormValues } from './schema';` : null,
   ]
     .filter((line): line is string => line !== null)
     .join('\n');
@@ -76,30 +83,33 @@ ${columnDefs}
 export function ${page.name}Page() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
-  const [dialogRecord, setDialogRecord] = useState<${page.name}Record | 'new' | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<${page.name}Record | null>(null);
+  const [detailRecord, setDetailRecord] = useState<${page.name}Record | null>(null);
+  ${write ? `const [dialogRecord, setDialogRecord] = useState<${page.name}Record | 'new' | null>(null);` : ''}
+  ${remove ? `const [pendingDelete, setPendingDelete] = useState<${page.name}Record | null>(null);` : ''}
 
   const list = use${page.name}List({ page, limit: 20, search: search || undefined });
-  const createMutation = useCreate${singular}();
-  const updateMutation = useUpdate${singular}();
-  const deleteMutation = useDelete${singular}();
+  ${create ? `const createMutation = useCreate${singular}();` : ''}
+  ${update ? `const updateMutation = useUpdate${singular}();` : ''}
+  ${remove ? `const deleteMutation = useDelete${singular}();` : ''}
 
   const items = list.data?.items ?? [];
   const pagination = list.data?.meta.pagination;
 
-  const handleSubmit = (values: Create${singular}FormValues): void => {
-    if (dialogRecord && dialogRecord !== 'new') {
+  ${write ? `const handleSubmit = (values: Create${singular}FormValues): void => {
+    ${update ? `if (dialogRecord && dialogRecord !== 'new') {
       updateMutation.mutate(
         { id: dialogRecord.id, payload: values },
         { onSuccess: () => { setDialogRecord(null); } },
       );
-    } else {
+    }` : ''}${create && update ? ' else {' : ''}
+      ${create ? `
       createMutation.mutate(values, { onSuccess: () => { setDialogRecord(null); } });
-    }
-  };
+      ` : ''}${create && update ? '}' : ''}
+  };` : ''}
 
   const content = (
     <>
+      ${unsupported.length ? `<p role="status" className="mb-4 text-sm text-fg-muted">Unsupported operations: {${JSON.stringify(unsupported.join(', '))}}. No corresponding action is enabled.</p>` : ''}
       <div className="mb-4 flex items-center justify-between gap-3">
         <SearchInput
           placeholder="Search ${page.navLabel.toLowerCase()}"
@@ -120,8 +130,8 @@ export function ${page.name}Page() {
             getRowId={(row) => row.id}
             loading={list.isPending}
             emptyTitle="No ${page.navLabel.toLowerCase()} yet"
-            emptyDescription="Create the first one to get started."
-            onRowClick={(row) => { setDialogRecord(row); }}
+            emptyDescription="No records found."
+            onRowClick={(row) => { setDetailRecord(row); }}
           />
           {pagination && (
             <Pagination
@@ -142,16 +152,26 @@ export function ${page.name}Page() {
       <PageHeader
         title="${page.navLabel}"
         description="Manage ${page.navLabel.toLowerCase()} records."
-        actions={
+        ${create ? `actions={
           <Button variant="primary" icon={<Plus className="size-3.5" />} onClick={() => { setDialogRecord('new'); }}>
             New ${singular}
           </Button>
-        }
+        }` : ''}
       />
 
       ${wrappedContent}
 
-      {dialogRecord && (
+      {detailRecord && (
+        <Dialog open onClose={() => { setDetailRecord(null); }} title="${singular} details">
+          <dl className="space-y-3">
+${page.formFields.filter(field => inputTypeOf(field) !== 'password').map(field => `            <div><dt className="text-sm font-medium">${labelOf(field)}</dt><dd className="whitespace-pre-wrap break-words text-sm">{String(detailRecord.${field.field} ?? '')}</dd></div>`).join('\n')}
+          </dl>
+          ${update ? `<Button icon={<Pencil className="size-3.5" />} onClick={() => { setDialogRecord(detailRecord); setDetailRecord(null); }}>Edit ${singular}</Button>` : ''}
+          ${remove ? `<Button icon={<Trash2 className="size-3.5" />} onClick={() => { setPendingDelete(detailRecord); setDetailRecord(null); }}>Delete ${singular}</Button>` : ''}
+        </Dialog>
+      )}
+
+      ${write ? `{dialogRecord && (
         <Dialog
           open={Boolean(dialogRecord)}
           onClose={() => { setDialogRecord(null); }}
@@ -161,12 +181,12 @@ export function ${page.name}Page() {
             initialValues={dialogRecord === 'new' ? undefined : (dialogRecord as unknown as Partial<Create${singular}FormValues>)}
             onSubmit={handleSubmit}
             onCancel={() => { setDialogRecord(null); }}
-            submitting={createMutation.isPending || updateMutation.isPending}
+            submitting={${[create ? 'createMutation.isPending' : '', update ? 'updateMutation.isPending' : ''].filter(Boolean).join(' || ')}}
           />
         </Dialog>
-      )}
+      )}` : ''}
 
-      <ConfirmDialog
+      ${remove ? `<ConfirmDialog
         open={pendingDelete !== null}
         title="Delete ${singular.toLowerCase()}"
         description="This action cannot be undone."
@@ -177,7 +197,7 @@ export function ${page.name}Page() {
           if (pendingDelete) deleteMutation.mutate(pendingDelete.id);
           setPendingDelete(null);
         }}
-      />
+      />` : ''}
     </>
   );
 }

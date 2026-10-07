@@ -93,22 +93,33 @@ export function deriveSiteContent(spec: RequirementSpec): SiteContent {
   const goal = spec.goal?.trim();
   const capabilities = spec.modules.filter((module) => !CHROME.test(module));
   const functional = (spec.functionalRequirements ?? []).filter((item) => item.trim() !== '');
+  const unsupported = spec.semantics?.design?.entities.flatMap(entity => entity.operations
+    .filter(operation => operation.intent === 'requested' && operation.support === 'unsupported')
+    .map(operation => `${entity.name}: ${operation.name}`)) ?? [];
+  const limitation = unsupported.length ? ` Requested but unsupported: ${unsupported.join(', ')}.` : '';
+  const supportedFeatures = spec.semantics?.design?.entities.filter(entity => entity.operationPolicy === 'explicit')
+    .map(entity => ({
+      title: entity.name,
+      description: `${entity.operations.filter(operation => operation.intent === 'requested' && operation.action !== 'domain' && !entity.operations.some(excluded => excluded.intent === 'excluded' && excluded.action === operation.action)).map(operation => operation.action).join(', ')} ${entity.name.toLowerCase()}. Fields: ${entity.fields.map(field => field.name).join(', ')}.` + limitation,
+    })) ?? [];
 
   const features: SiteFeature[] =
-    functional.length > 0
+    unsupported.length && supportedFeatures.length
+      ? supportedFeatures.slice(0, LIMITS.features)
+      : functional.length > 0
       ? functional.slice(0, LIMITS.features).map((item, index) => ({
           title: capabilities[index] ?? sentenceCase(item.split(/[,.;:]/)[0] ?? item).slice(0, 48),
-          description: sentenceCase(item),
+          description: sentenceCase(item) + limitation,
         }))
       : capabilities.slice(0, LIMITS.features).map((module) => ({
           title: module,
-          description: `${module} built into ${brand} from day one.`,
+          description: `${module} built into ${brand} from day one.` + limitation,
         }));
 
   const faq: SiteFaq[] = [
     {
       question: `What is ${brand}?`,
-      answer: goal ?? `${brand} is a ${kind} application.`,
+      answer: (unsupported.length ? `${brand} is a ${kind} application.` : goal ?? `${brand} is a ${kind} application.`) + limitation,
     },
   ];
   if (capabilities.length > 0) {
@@ -127,10 +138,10 @@ export function deriveSiteContent(spec: RequirementSpec): SiteContent {
   return {
     brand,
     tagline: sentenceCase(kind),
-    headline: goal ? text(goal, brand, 90) : `${brand}, ready when you are`,
+    headline: unsupported.length ? brand : goal ? text(goal, brand, 90) : `${brand}, ready when you are`,
     subheadline: goal
-      ? `Everything ${brand} offers, in one place.`
-      : `A ${kind} application with ${capabilities.slice(0, 3).join(', ').toLowerCase() || 'everything you need'}.`,
+      ? `Everything ${brand} offers, in one place.` + limitation
+      : `A ${kind} application with ${capabilities.slice(0, 3).join(', ').toLowerCase() || 'everything you need'}.` + limitation,
     primaryCta: 'Get started',
     features,
     pricing: [],

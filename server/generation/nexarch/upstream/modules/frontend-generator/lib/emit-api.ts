@@ -221,9 +221,13 @@ export function useRegister() {
 
 function entityService(page: PageModel): string {
   const singular = entitySingular(page.name);
+  const create = page.operations.includes('create');
+  const update = page.operations.includes('update');
+  const remove = page.operations.includes('delete');
+  const types = [create ? `Create${singular}Input` : '', update ? `Update${singular}Input` : '', `${page.name}Record`].filter(Boolean).join(', ');
   return `import { apiClient, unwrap } from '@/shared/services/api-client';
 import type { ApiMeta, ApiSuccess } from '@/shared/types/api';
-import type { Create${singular}Input, Update${singular}Input, ${page.name}Record } from '../types';
+import type { ${types} } from '../types';
 
 export interface ListQuery {
   page?: number;
@@ -250,37 +254,42 @@ export async function get${singular}(id: string): Promise<${page.name}Record> {
   return unwrap(response.data);
 }
 
-export async function create${singular}(payload: Create${singular}Input): Promise<${page.name}Record> {
+${create ? `export async function create${singular}(payload: Create${singular}Input): Promise<${page.name}Record> {
   const response = await apiClient.post<ApiSuccess<${page.name}Record>>(BASE_PATH, payload);
   return unwrap(response.data);
-}
+}` : ''}
 
-export async function update${singular}(id: string, payload: Update${singular}Input): Promise<${page.name}Record> {
+${update ? `export async function update${singular}(id: string, payload: Update${singular}Input): Promise<${page.name}Record> {
   const response = await apiClient.put<ApiSuccess<${page.name}Record>>(\`\${BASE_PATH}/\${id}\`, payload);
   return unwrap(response.data);
-}
+}` : ''}
 
-export async function delete${singular}(id: string): Promise<void> {
+${remove ? `export async function delete${singular}(id: string): Promise<void> {
   await apiClient.delete(\`\${BASE_PATH}/\${id}\`);
-}
+}` : ''}
 `;
 }
 
 function entityHooks(page: PageModel): string {
   const singular = entitySingular(page.name);
   const slug = page.slug;
-  return `import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+  const create = page.operations.includes('create');
+  const update = page.operations.includes('update');
+  const remove = page.operations.includes('delete');
+  const mutation = create || update || remove;
+  const types = [create ? `Create${singular}Input` : '', update ? `Update${singular}Input` : ''].filter(Boolean).join(', ');
+  return `import { ${mutation ? 'useMutation, useQuery, useQueryClient' : 'useQuery'} } from '@tanstack/react-query';
 
-import { toast } from '@/shared/store/toast.store';
+${mutation ? "import { toast } from '@/shared/store/toast.store';" : ''}
 import {
-  create${singular},
-  delete${singular},
+  ${create ? `create${singular},` : ''}
+  ${remove ? `delete${singular},` : ''}
   get${singular},
   list${page.name},
-  update${singular},
+  ${update ? `update${singular},` : ''}
 } from '../services/${slug}.service';
 import type { ListQuery } from '../services/${slug}.service';
-import type { Create${singular}Input, Update${singular}Input } from '../types';
+${types ? `import type { ${types} } from '../types';` : ''}
 
 const queryKeys = {
   all: ['${slug}'] as const,
@@ -303,7 +312,7 @@ export function use${singular}(id: string | undefined) {
   });
 }
 
-export function useCreate${singular}() {
+${create ? `export function useCreate${singular}() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (payload: Create${singular}Input) => create${singular}(payload),
@@ -315,9 +324,9 @@ export function useCreate${singular}() {
       toast(error.message, 'error');
     },
   });
-}
+}` : ''}
 
-export function useUpdate${singular}() {
+${update ? `export function useUpdate${singular}() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: ({ id, payload }: { id: string; payload: Update${singular}Input }) => update${singular}(id, payload),
@@ -329,9 +338,9 @@ export function useUpdate${singular}() {
       toast(error.message, 'error');
     },
   });
-}
+}` : ''}
 
-export function useDelete${singular}() {
+${remove ? `export function useDelete${singular}() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => delete${singular}(id),
@@ -343,7 +352,7 @@ export function useDelete${singular}() {
       toast(error.message, 'error');
     },
   });
-}
+}` : ''}
 `;
 }
 

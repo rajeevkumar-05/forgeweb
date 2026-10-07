@@ -146,6 +146,10 @@ export function buildSpec(
     return explicit.length ? explicit : dataModules.filter(module => module !== 'Users');
   };
   const scopeForFact = (fact: typeof evidence[number]) => {
+    if (fact.kind === 'field') {
+      const context = fact.fieldContext ?? fact.clause.replace(fact.phrase, ' ');
+      return MODULE_LEXICON.filter(entry => dataModules.includes(entry.label) && entry.phrases.some(phrase => containsPhrase(context, phrase))).map(entry => entry.label);
+    }
     if (fact.kind !== 'operation') return scopeFor(fact.clause);
     const object = fact.clause.slice(fact.clause.indexOf(fact.phrase) + fact.phrase.length).split(/\b(?:with|for|in|to|from|by)\b/)[0];
     const targets = MODULE_LEXICON.filter(entry => dataModules.includes(entry.label) && entry.phrases.some(phrase => containsPhrase(object, phrase))).map(entry => entry.label);
@@ -156,7 +160,7 @@ export function buildSpec(
     action, modules: dedupe(facts('operation').filter(item => item.label === action).flatMap(scopeForFact)).filter(module => !denied('operation', action, module)),
   })).filter(item => item.modules.length);
   const fields = [...new Set(facts('field').map(item => item.label))].map(name => ({
-    name, modules: dedupe(facts('field').filter(item => item.label === name).flatMap(item => scopeFor(item.clause)))
+    name, modules: dedupe(facts('field').filter(item => item.label === name).flatMap(scopeForFact))
       .filter(module => FIELD_LEXICON.find(entry => entry.label === name)?.modules.includes(module) && !denied('field', name, module)),
   })).filter(item => item.modules.length);
   const scopedExclusions = exclusions.map(item => item.kind === 'operation' || item.kind === 'field'

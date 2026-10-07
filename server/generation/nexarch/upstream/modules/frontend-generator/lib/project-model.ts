@@ -19,9 +19,11 @@ import type {
   OpenApiDocument,
   TableDesign,
 } from '../../../shared/types/design.ts';
-import type { RequirementSpec } from '../../../shared/types/requirement.ts';
+import type { RequirementSemantics, RequirementSpec, SemanticEntity } from '../../../shared/types/requirement.ts';
 import { kebabCase, pascalCase, singularize } from '../../../shared/utils/strings.ts';
 import type { BackendManifest } from '../frontend-generator.types.ts';
+import { crudOperations, operationForMethod } from '../../../shared/utils/operations.ts';
+import type { CrudOperation } from '../../../shared/utils/operations.ts';
 
 const SERVER_MANAGED = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
 const CHROME_TAGS = new Set(['Authentication', 'Reports', 'Notifications']);
@@ -98,14 +100,17 @@ function routeImplemented(manifest: BackendManifest, method: string, path: strin
   return manifest.routes.some((route) => route.implemented && route.method.toUpperCase() === method && route.path === path);
 }
 
-function completeCrud(manifest: BackendManifest, basePath: string, authEnabled: boolean): boolean {
+function completeCrud(manifest: BackendManifest, basePath: string, authEnabled: boolean, operations: readonly CrudOperation[]): boolean {
   const root = `/api/v1${basePath}`;
   const required = [['GET', root], ['GET', `${root}/:id`], ['POST', root], ['PUT', `${root}/:id`], ['DELETE', `${root}/:id`]] as const;
-  const routes = required.map(([method, path]) => manifest.routes.find((route) => route.implemented && route.method.toUpperCase() === method && route.path === path));
-  return routes.every(Boolean) && (authEnabled || routes.every((route) => route?.auth === false));
+  const routes = required.filter(([method]) => operations.includes(operationForMethod(method)))
+    .map(([method, path]) => manifest.routes.find((route) => route.implemented && route.method.toUpperCase() === method && route.path === path));
+  return operations.includes('read') && routes.every(Boolean) && (authEnabled || routes.every((route) => route?.auth === false));
 }
 
 export interface PageModel {
+  /** Intent survives even when the live capability gate withholds this page. */
+  semantic?: SemanticEntity;
   /** PascalCase, e.g. `Products`. */
   name: string;
   /** kebab-case, e.g. `products`. */
@@ -118,6 +123,7 @@ export interface PageModel {
   metadata: EntityMetadata | null;
   /** Real CRUD is implemented on the backend for this entity. */
   implemented: boolean;
+  operations: CrudOperation[];
   listColumns: ColumnDesign[];
   formFields: ColumnDesign[];
   icon: string;
@@ -125,6 +131,7 @@ export interface PageModel {
 }
 
 export interface FrontendProjectModel {
+  semantics?: RequirementSemantics;
   projectName: string;
   projectType: string;
   apiPrefix: string;
@@ -136,6 +143,10 @@ export interface FrontendProjectModel {
 /** Columns worth a table column: skip huge text and skip FK ids (shown via a
  * resolved label elsewhere, not raw UUIDs) — cap at 6 for a scannable table. */
 function pickListColumns(entity: TableDesign): ColumnDesign[] {
+  if (entity.semantic?.fields.length) {
+    const fields = new Set(entity.semantic.fields.map(field => field.name));
+    return entity.columns.filter(column => fields.has(column.field));
+  }
   const candidates = entity.columns.filter(
     (c) => !c.references && c.name !== 'id' && c.name !== 'deleted_at' && !(c.sqlType === 'TEXT'),
   );
@@ -169,14 +180,17 @@ export function buildProjectModel(
     // isn't backed by real CRUD yet, exactly as the Backend Generator
     // stubs a controller rather than omitting the module.
     if (CHROME_TAGS.has(tag)) continue;
-    const entity = tableByEntity.get(tag) ?? null;
+    const entityName = architecture.apiModules.find(module => module.module === tag)?.entity ?? tag;
+    const entity = tableByEntity.get(entityName) ?? null;
     const backendModule = backendByName.get(tag);
     // Nothing to build a table/form from without a table, regardless of
     // what the backend manifest claims.
     const apiBasePath = moduleBasePath(tag, openapi);
-    const implemented = entity !== null && (backendModule?.crud ?? false) && completeCrud(backendManifest, apiBasePath, authEnabled);
+    const operations = crudOperations(entity?.semantic);
+    const implemented = entity !== null && (backendModule?.crud ?? false) && completeCrud(backendManifest, apiBasePath, authEnabled, operations);
 
     pages.push({
+      ...(entity?.semantic ? { semantic: structuredClone(entity.semantic) } : {}),
       name: pascalCase(tag),
       slug: kebabCase(tag),
       route: `/${kebabCase(tag)}`,
@@ -184,6 +198,7 @@ export function buildProjectModel(
       entity,
       metadata: entity ? (metadataByEntity.get(entity.entity) ?? null) : null,
       implemented,
+      operations,
       listColumns: entity ? pickListColumns(entity) : [],
       formFields: entity ? entity.columns.filter((c) => !SERVER_MANAGED.has(c.name)) : [],
       icon: iconFor(entity?.entity ?? tag),
@@ -192,6 +207,7 @@ export function buildProjectModel(
   }
 
   return {
+    ...(requirements.semantics ? { semantics: structuredClone(requirements.semantics) } : {}),
     projectName: architecture.meta.projectName,
     projectType: architecture.meta.projectType,
     apiPrefix: '/api/v1',

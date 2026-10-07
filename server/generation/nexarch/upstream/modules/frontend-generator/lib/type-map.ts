@@ -28,6 +28,7 @@ function zodBase(column: ColumnDesign): string {
 
   let schema = 'z.string()';
   if (column.format === 'email') schema += '.email()';
+  else if (column.format === 'uuid') schema += '.uuid()';
   else if (column.format === 'uri') schema += '.url()';
   else if (!column.nullable) schema += '.min(1)';
   const maxLength = /^VARCHAR\((\d+)\)$/.exec(column.sqlType);
@@ -37,6 +38,7 @@ function zodBase(column: ColumnDesign): string {
 
 export function zodField(column: ColumnDesign, partial: boolean): string {
   let expr = zodBase(column);
+  if (column.nullable && column.format === 'uuid') expr += ".or(z.literal(''))";
   if (column.nonNegative) expr += '.nonnegative()';
   if (column.nullable) expr += '.nullable()';
   const hasDefault = Boolean(column.defaultExpression) || column.enumValues !== undefined;

@@ -18,6 +18,22 @@ import {
 } from './lexicon.ts';
 import type { LexiconEntry } from './lexicon.ts';
 import { dedupe, phraseMentions } from './normalize.ts';
+import type { PhraseMention } from './normalize.ts';
+
+function operationMention(label: string, mention: PhraseMention): boolean {
+  const offset = mention.clause.indexOf(mention.phrase);
+  const before = mention.clause.slice(0, offset);
+  const after = mention.clause.slice(offset + mention.phrase.length);
+  // Marking a completion is not recording attendance; completion values are not verbs.
+  if (label === 'record' && mention.phrase === 'mark' && /\bcomplete(?:d)?\b/.test(after)) return false;
+  if (label !== 'complete') return true;
+  if (/\b(?:has|have|contains?|includes?|with)\b/.test(before)) return false;
+  const marked = /\bmark(?:ed)?\b/.test(before) || mention.phrase.startsWith('mark ');
+  if (marked) return true;
+  return !/\b(?:status|state)\b/.test(before)
+    && !/\b(?:is|are|was|were|be)\s+(?:not\s+)?$/.test(before)
+    && after.trim().length > 0;
+}
 
 function matchLexicon(
   prompt: string,
@@ -27,7 +43,8 @@ function matchLexicon(
 ): string[] {
   const labels: string[] = [];
   for (const entry of lexicon) {
-    const mentions = phraseMentions(prompt, entry.phrases, kind === 'operation' ? [] : OPERATION_LEXICON.flatMap(item => [...item.phrases]));
+    const mentions = phraseMentions(prompt, entry.phrases, kind === 'operation' ? [] : OPERATION_LEXICON.flatMap(item => [...item.phrases]))
+      .filter(mention => kind !== 'operation' || operationMention(entry.label, mention));
     evidence.push(...mentions.map(mention => ({ ...mention, kind, label: entry.label })));
     if (mentions.some(item => item.polarity === 'included') && !mentions.some(item => item.polarity === 'excluded')) {
       labels.push(entry.label);

@@ -59,7 +59,9 @@ function buildRelationLines(design: DatabaseDesign): RelationLines {
     const relationName = needsName ? `${rel.child}${pascalCase(base)}` : undefined;
 
     // Child side: the model that owns the foreign key.
-    const childField = camelCase(base);
+    const scalarFields = new Set(design.tables.find(table => table.entity === rel.child)?.columns.map(column => column.field));
+    let childField = camelCase(base);
+    while (scalarFields.has(childField)) childField += 'Relation';
     const optional = rel.onDelete === 'SET NULL' ? '?' : '';
     const onDeleteAttr = `, onDelete: ${PRISMA_REFERENTIAL_ACTION[rel.onDelete]}`;
     const onUpdate = rel.onUpdate ?? design.target.foreignKeys.defaultUpdateAction;

@@ -165,10 +165,15 @@ function formComponent(page: PageModel): string {
 
   const singular = entitySingular(page.name);
   const fieldsMarkup = page.formFields.map((c) => renderField(c)).join('\n');
+  const normalizedFields = page.formFields.filter(c => c.nullable && c.format === 'uuid')
+    .map(c => `            ${c.field}: values.${c.field} === '' ? null : values.${c.field},`).join('\n');
+  const submit = normalizedFields
+    ? `(values) => onSubmit({\n            ...values,\n${normalizedFields}\n          })`
+    : 'onSubmit';
   const defaultEntries = page.formFields
     .map(
       (c) =>
-        `    ${c.field}: initialValues?.${c.field} ?? ${c.enumValues ? `'${c.enumValues[0] ?? ''}'` : c.prismaType === 'Boolean' ? 'false' : c.prismaType === 'Int' || c.prismaType === 'Decimal' ? '0' : `''`},`,
+        `    ${c.field}: initialValues?.${c.field}${c.prismaType === 'DateTime' ? `?.slice(0, ${c.format === 'date' ? 10 : 16})` : ''} ?? ${c.enumValues ? `'${c.enumValues[0] ?? ''}'` : c.prismaType === 'Boolean' ? 'false' : c.prismaType === 'Int' || c.prismaType === 'Decimal' ? '0' : `''`},`,
     )
     .join('\n');
 
@@ -227,7 +232,7 @@ ${defaultEntries}
   return (
     <form
       onSubmit={(event) => {
-        void handleSubmit(onSubmit)(event);
+        void handleSubmit(${submit})(event);
       }}
       noValidate
       className="space-y-4"
@@ -252,6 +257,9 @@ export function emitForms(pages: PageModel[]): GeneratedFile[] {
   for (const page of pages.filter((p) => p.implemented)) {
     files.push(
       file(`src/features/${page.slug}/types.ts`, 'typescript', typesFile(page)),
+    );
+    if (!page.operations.includes('create') && !page.operations.includes('update')) continue;
+    files.push(
       file(`src/features/${page.slug}/schema.ts`, 'typescript', schemaFile(page)),
       file(
         `src/features/${page.slug}/components/${entitySingular(page.name)}Form.tsx`,
