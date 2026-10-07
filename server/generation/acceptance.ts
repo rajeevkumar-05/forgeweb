@@ -29,6 +29,13 @@ export type CandidateAcceptanceReceipt = {
   readonly idempotent: boolean;
 };
 
+export type CandidateRecoveryIdentity = {
+  readonly candidateId: string;
+  readonly candidateDigest: string;
+  readonly projectId: string;
+  readonly buildId: string;
+};
+
 function failure<Value>(code: EngineFailureCode, message: string, diagnosticCode: string): EngineResult<Value> {
   return {
     ok: false,
@@ -114,6 +121,81 @@ export class CandidateAcceptanceService {
   private async authorized(project: Project | undefined, actor: EngineActor): Promise<boolean> {
     return Boolean(project && actor.kind === "authenticated" && actor.subjectId && actor.ownerId
       && await this.verifyOwner(structuredClone(project), structuredClone(actor)));
+  }
+
+  /** Internal recovery of an unchanged saved candidate; never generates, repairs or previews. */
+  async recoverCandidate(identityInput: CandidateRecoveryIdentity, requestInput: GenerationRequest, actorInput: EngineActor): Promise<EngineResult<CandidateAcceptanceReceipt>> {
+    const identity = structuredClone(identityInput);
+    const actor = structuredClone(actorInput);
+    let request: GenerationRequest;
+    try {
+      request = prepareGenerationRequest(requestInput);
+    } catch {
+      return failure("validation_failure", "Recovery requires the exact approved generation request", "INVALID_RECOVERY_REQUEST");
+    }
+
+    const preflight = async (): Promise<{ code: string; message: string } | undefined> => {
+      const database = this.store.read();
+      const matches = Object.values(database.generationCandidates).filter((record) => record.candidateDigest === identity.candidateDigest);
+      const record = matches[0];
+      if (!/^sha256:[a-f0-9]{64}$/.test(identity.candidateDigest) || matches.length !== 1 || !record
+        || record.id !== identity.candidateId || record.projectId !== identity.projectId || record.buildId !== identity.buildId
+        || request.scope.projectId !== identity.projectId || request.scope.buildId !== identity.buildId) {
+        return { code: "RECOVERY_IDENTITY_MISMATCH", message: "Recovery identity does not uniquely match the saved candidate" };
+      }
+      const project = database.projects[record.projectId];
+      if (!await this.authorized(project, actor) || JSON.stringify(actor) !== JSON.stringify(request.scope.actor)
+        || actor.ownerId !== record.ownerId || actor.subjectId !== record.subjectId) {
+        return { code: "OWNER_AUTHORIZATION_FAILED", message: "Candidate recovery requires its verified ForgeWeb owner" };
+      }
+      try {
+        prepareCandidate(record.candidate, request);
+        if (record.candidate.id !== record.id || record.candidate.projectId !== record.projectId
+          || record.approvedPlanId !== record.candidate.approvedPlanId || record.bindingDigest !== record.candidate.bindingDigest
+          || record.specificationDigest !== record.candidate.specificationDigest || record.planDigest !== record.candidate.planDigest
+          || record.candidateDigest !== candidateOutputDigest(record.candidate)
+          || record.manifestDigest !== candidateManifestDigest(record.candidate)
+          || record.candidate.assembly.determinism.outputDigest !== record.candidateDigest) throw new TypeError("Candidate changed");
+      } catch {
+        return { code: "CANDIDATE_INTEGRITY_FAILED", message: "Saved candidate integrity does not match the recovery identity" };
+      }
+      const contextError = durableContextError(database, request, record.candidate);
+      if (record.status === "accepted") {
+        // Acceptance legitimately advances the base. Only the already-linked version
+        // can satisfy an idempotent recovery; no new CAS promotion is performed.
+        if (contextError && contextError.code !== "CAS_BASE_CONFLICT") return contextError;
+        const version = record.acceptedVersionId ? database.versions[record.acceptedVersionId] : undefined;
+        const files = version ? database.versionFiles[version.id] : undefined;
+        if (!version || !files || version.projectId !== record.projectId || version.buildId !== record.buildId
+          || version.candidateId !== record.id || version.candidateDigest !== record.candidateDigest
+          || version.candidateManifestDigest !== record.manifestDigest || project.currentVersionId !== version.id
+          || JSON.stringify(files) !== JSON.stringify(record.candidate.files) || !validationReady(record)) {
+          return { code: "ACCEPTED_VERSION_MISMATCH", message: "Existing accepted version does not match the saved candidate" };
+        }
+        return undefined;
+      }
+      if (contextError) return contextError;
+      if (!["validation_failed", "validation_unavailable", "validated"].includes(record.status)) {
+        return { code: "INVALID_RECOVERY_STATE", message: "Candidate is not eligible for validation recovery" };
+      }
+      if (Object.values(database.versions).some((version) => version.projectId === record.projectId && version.buildId === record.buildId)) {
+        return { code: "RECOVERY_VERSION_EXISTS", message: "A ProjectVersion already exists for this build" };
+      }
+      return undefined;
+    };
+
+    const initialError = await preflight();
+    if (initialError) return failure("validation_failure", initialError.message, initialError.code);
+    if (this.get(identity.candidateId)?.status !== "accepted") {
+      const validated = await this.validateCandidate(identity.candidateId, request);
+      if (!validated.ok) return validated;
+      if (validated.value.status !== "validated") {
+        return failure("validation_failure", "Fresh required validation did not pass; recovery was not accepted", "RECOVERY_VALIDATION_NOT_PASSED");
+      }
+      const finalError = await preflight();
+      if (finalError) return failure("validation_failure", finalError.message, finalError.code);
+    }
+    return this.accept(identity.candidateId, request, actor);
   }
 
   async saveCandidate(requestInput: GenerationRequest, candidateInput: AssembledCandidateArtifacts): Promise<EngineResult<GenerationCandidateRecord>> {

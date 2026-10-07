@@ -159,6 +159,17 @@ export async function authenticateSafeGeneration(token: string): Promise<void> {
   await request<{ authenticated: true }>("/api/safe/session", { method: "POST", body: JSON.stringify({ token }) });
 }
 
+export async function activateSafeGeneration(token: string): Promise<SafeGenerationStatus> {
+  try {
+    await authenticateSafeGeneration(token);
+    const status = await getSafeGenerationStatus();
+    if (!status.enabled || !status.authenticated) throw new Error("Safe session was not established.");
+    return status;
+  } catch {
+    throw new Error("Verified activation failed. Check your activation token and server connection, then try again.");
+  }
+}
+
 export async function createSafeBuild(prompt: string): Promise<BuildResponse> {
   const payload = await request<ApiEnvelope>("/api/safe/builds", { method: "POST", body: JSON.stringify({ prompt }) });
   return payload.build;

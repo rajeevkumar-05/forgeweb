@@ -31,7 +31,7 @@ import SiteNav from "./components/SiteNav";
 import BuildProposal from "./components/BuildProposal";
 import ProjectLibrary from "./components/ProjectLibrary";
 import {
-  authenticateSafeGeneration,
+  activateSafeGeneration,
   confirmBuild,
   confirmSafeBuild,
   createBuild,
@@ -128,9 +128,12 @@ function Hero() {
     setStatusDetail("Master spec — submitting the idea to the private build workspace…");
     try {
       if (workflowMode === "safe" && !safeStatus?.authenticated) {
-        await authenticateSafeGeneration(activationToken);
-        setActivationToken("");
-        setSafeStatus(await getSafeGenerationStatus());
+        setStatusDetail("Verified workflow — authenticating...");
+        try {
+          setSafeStatus(await activateSafeGeneration(activationToken));
+        } finally {
+          setActivationToken("");
+        }
       }
       const created = workflowMode === "safe" ? await createSafeBuild(prompt) : await createBuild(prompt);
       const completed = await waitForBuild(created.id, (build) => {
@@ -283,7 +286,7 @@ function Hero() {
             <form onSubmit={launchDemo} className="hero-chat-form">
               <div className="hero-chat-header">
                 <div className="hero-chat-label"><span /> Ask ForgeWeb</div>
-                <div className="hero-chat-security"><LockKeyhole className="size-3" /> Private build workspace</div>
+                <div className="hero-chat-security"><LockKeyhole className="size-3" /> {workflowMode === "safe" && safeStatus?.authenticated ? "Verified session active" : "Private build workspace"}</div>
               </div>
               {safeStatus?.enabled && (
                 <div className="hero-workflow-row">
@@ -299,7 +302,7 @@ function Hero() {
                       className="hero-activation-token"
                       aria-label="Verified workflow activation token"
                       placeholder="Activation token"
-                      autoComplete="current-password"
+                      autoComplete="off"
                     />
                   )}
                 </div>
