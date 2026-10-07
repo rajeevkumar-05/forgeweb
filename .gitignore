@@ -12,3 +12,5 @@ ui-audit-*.png
 .env
 .env.*
 !.env.example
+# Local TLS certificates and private keys
+.certs/

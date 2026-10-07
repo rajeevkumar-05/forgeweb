@@ -71,8 +71,9 @@ function freezeTree<T>(value: T): T {
   return value;
 }
 
-export function isolatedRunnerPolicy(timeoutMs = 120_000): IsolatedRunnerPolicy {
+export function isolatedRunnerPolicy(timeoutMs = 120_000, executionBudgetMs = 60_000): IsolatedRunnerPolicy {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 600_000) throw new TypeError("Runner timeout must be between 1 and 600 seconds");
+  if (!Number.isSafeInteger(executionBudgetMs) || executionBudgetMs < 1_000 || executionBudgetMs > 300_000) throw new TypeError("Runner execution budget must be between 1 and 300 seconds");
   return freezeTree({
     version: RUNNER_POLICY_VERSION,
     boundary: "external-container",
@@ -84,7 +85,7 @@ export function isolatedRunnerPolicy(timeoutMs = 120_000): IsolatedRunnerPolicy 
     hostPathAccess: false,
     forgeWebControlPlaneAccess: false,
     userSecretAccess: false,
-    resources: { memoryMb: 768, cpuMillis: 60_000, maxProcesses: 64 },
+    resources: { memoryMb: 768, cpuMillis: executionBudgetMs, maxProcesses: 64 },
   });
 }
 

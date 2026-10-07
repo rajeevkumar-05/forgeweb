@@ -165,6 +165,21 @@ export class SafeGenerationActivationService {
     return actor;
   }
 
+  async previewAccepted(projectId: string, versionId: string, actor: EngineActor) {
+    if (!this.active) throw new ApiError(404, "SAFE_GENERATION_DISABLED", "The verified generation workflow is not enabled.");
+    const result = await this.pipeline.previewAccepted(projectId, versionId, actor);
+    if (!result.ok) {
+      const code = result.error.diagnostics?.[0]?.code ?? "RUNTIME_PREVIEW_FAILED";
+      const status = code === "OWNER_AUTHORIZATION_FAILED" ? 403 : code.startsWith("RUNTIME_") ? 503 : 409;
+      throw new ApiError(status, code, result.error.message);
+    }
+    const preview = result.value;
+    // Capabilities are returned only to this authenticated request, never stored in builds.
+    return preview.status === "ready"
+      ? { status: "ready" as const, versionId: preview.versionId, previewUrl: preview.execution.previewUrl }
+      : { status: "unavailable" as const, versionId: preview.versionId, message: preview.reason };
+  }
+
   isSafeBuild(build: Pick<Build, "generationMode">): boolean {
     return build.generationMode === "safe";
   }

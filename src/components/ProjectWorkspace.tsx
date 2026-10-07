@@ -4,6 +4,7 @@ import {
   Database,
   Download,
   Expand,
+  ExternalLink,
   FileCode2,
   History,
   Laptop,
@@ -19,8 +20,10 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   applyProjectEdit,
+  ApiRequestError,
   downloadProjectZip,
   getProjectWorkspace,
+  openSafePreview,
   restoreProjectVersion,
   validateProjectExport,
   type ExportSummary,
@@ -29,6 +32,7 @@ import {
 
 type ProjectWorkspaceProps = {
   projectId: string;
+  safeGeneration?: boolean;
   initialFilePaths: string[];
   validationCount: number;
   onProjectUpdated?: () => void;
@@ -40,13 +44,15 @@ type PreviewMode = "desktop" | "tablet" | "mobile";
 const editPhases = ["Understanding request", "Identifying affected files", "Updating scoped source", "Validating project", "Refreshing preview"];
 const viewportWidths: Record<PreviewMode, string> = { desktop: "100%", tablet: "768px", mobile: "390px" };
 
-export default function ProjectWorkspace({ projectId, initialFilePaths, validationCount, onProjectUpdated }: ProjectWorkspaceProps) {
+export default function ProjectWorkspace({ projectId, safeGeneration = false, initialFilePaths, validationCount, onProjectUpdated }: ProjectWorkspaceProps) {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [tab, setTab] = useState<WorkspaceTab>("files");
   const [mode, setMode] = useState<PreviewMode>("desktop");
   const [refreshKey, setRefreshKey] = useState(0);
   const [previewSrc, setPreviewSrc] = useState("");
   const [previewError, setPreviewError] = useState("");
+  const [safePreviewState, setSafePreviewState] = useState<"idle" | "starting" | "ready" | "unavailable" | "failed" | "unauthorized">("idle");
+  const [safePreviewMessage, setSafePreviewMessage] = useState("");
   const [workspaceError, setWorkspaceError] = useState("");
   const [loading, setLoading] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
@@ -60,6 +66,7 @@ export default function ProjectWorkspace({ projectId, initialFilePaths, validati
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState("");
   const [exportSummary, setExportSummary] = useState<ExportSummary | null>(null);
+  const isSafeVersion = safeGeneration || Boolean(workspace?.currentVersion?.candidateId);
 
   const loadWorkspace = useCallback(async () => {
     setLoading(true);
@@ -76,7 +83,7 @@ export default function ProjectWorkspace({ projectId, initialFilePaths, validati
   useEffect(() => { void loadWorkspace(); }, [loadWorkspace]);
 
   useEffect(() => {
-    if (tab !== "preview") return;
+    if (tab !== "preview" || loading || !workspace || isSafeVersion) return;
     const url = `/api/projects/${encodeURIComponent(projectId)}/preview?v=${encodeURIComponent(workspace?.currentVersion?.id ?? "current")}&refresh=${refreshKey}`;
     let active = true;
     setPreviewError("");
@@ -88,7 +95,27 @@ export default function ProjectWorkspace({ projectId, initialFilePaths, validati
       if (active) setPreviewError(error instanceof Error ? error.message : "Preview could not start.");
     });
     return () => { active = false; };
-  }, [projectId, refreshKey, tab, workspace?.currentVersion?.id]);
+  }, [projectId, refreshKey, tab, workspace, loading, isSafeVersion]);
+
+  useEffect(() => {
+    setSafePreviewState("idle");
+    setSafePreviewMessage("");
+  }, [projectId, workspace?.currentVersion?.id]);
+
+  const openRuntimePreview = async () => {
+    if (loading || workspace?.project.id !== projectId || !workspace.currentVersion || safePreviewState === "starting") return;
+    setSafePreviewState("starting");
+    setSafePreviewMessage("Preview starting...");
+    try {
+      const result = await openSafePreview(projectId, workspace.currentVersion.id);
+      setSafePreviewState(result.status);
+      setSafePreviewMessage(result.status === "ready" ? "Preview ready." : result.message);
+    } catch (error) {
+      const unauthorized = error instanceof ApiRequestError && [401, 403].includes(error.status);
+      setSafePreviewState(unauthorized ? "unauthorized" : "failed");
+      setSafePreviewMessage(unauthorized ? "Your session expired or this version belongs to another owner. Authenticate and try again." : error instanceof Error ? error.message : "Preview could not start.");
+    }
+  };
 
   const files = workspace?.files.map((file) => file.path) ?? initialFilePaths;
   const currentVersionId = workspace?.currentVersion?.id;
@@ -186,6 +213,16 @@ export default function ProjectWorkspace({ projectId, initialFilePaths, validati
 
       {workspaceError && <div className="workspace-error"><strong>Project workspace unavailable.</strong><p>{workspaceError}</p><button type="button" onClick={() => void loadWorkspace()}><RefreshCw /> Retry workspace</button></div>}
 
+      {isSafeVersion && !loading && workspace?.project.id === projectId && workspace.currentVersion?.validationStatus === "passed" && (
+        <div className="preview-actions">
+          <button type="button" className="button workspace-button" onClick={() => void openRuntimePreview()} disabled={safePreviewState === "starting"}>
+            {safePreviewState === "starting" ? <LoaderCircle className="animate-spin" /> : <ExternalLink />}
+            {safePreviewState === "starting" ? "Starting preview..." : "Open Preview"}
+          </button>
+          {safePreviewMessage && <p role="status" className={["failed", "unauthorized", "unavailable"].includes(safePreviewState) ? "workspace-error" : "workspace-muted"}>{safePreviewMessage}</p>}
+        </div>
+      )}
+
       {tab === "files" && (
         <div className="workspace-files" role="tabpanel">
           {(workspace?.files ?? []).map((file) => (
@@ -202,7 +239,11 @@ export default function ProjectWorkspace({ projectId, initialFilePaths, validati
         </div>
       )}
 
-      {tab === "preview" && (
+      {tab === "preview" && isSafeVersion && (
+        <div className="workspace-preview" role="tabpanel"><p className="workspace-muted">{workspace?.project.name} · {versionLabel}</p></div>
+      )}
+
+      {tab === "preview" && !isSafeVersion && (
         <div className="workspace-preview" role="tabpanel">
           <div className="preview-toolbar">
             <div className="preview-modes" aria-label="Preview viewport">

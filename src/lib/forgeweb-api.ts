@@ -45,6 +45,7 @@ export type ProjectVersion = {
   editPrompt: string;
   modifiedFiles: string[];
   sourceVersionId?: string;
+  candidateId?: string;
   validationStatus: "pending" | "passed" | "failed";
   validationChecks: Array<{ id: string; name: string; status: "passed" | "failed" | "skipped"; evidence: string }>;
   createdAt: string;
@@ -121,6 +122,19 @@ export type SafeGenerationStatus = {
   trustedRuntime: "configured" | "unavailable";
 };
 
+export class ApiRequestError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+export type SafePreviewResponse =
+  | { status: "ready"; versionId: string; previewUrl: string }
+  | { status: "unavailable"; versionId: string; message: string };
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -128,7 +142,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { "content-type": "application/json", ...init?.headers },
   });
   const payload = await response.json() as T & { error?: { message?: string } };
-  if (!response.ok) throw new Error(payload.error?.message ?? `Request failed with status ${response.status}.`);
+  if (!response.ok) throw new ApiRequestError(response.status, payload.error?.message ?? `Request failed with status ${response.status}.`);
   return payload;
 }
 
@@ -156,6 +170,42 @@ export async function confirmSafeBuild(buildId: string): Promise<BuildResponse> 
     { method: "POST" },
   );
   return payload.build;
+}
+
+export async function requestSafePreview(projectId: string, versionId: string): Promise<SafePreviewResponse> {
+  const { preview } = await request<{ preview: SafePreviewResponse }>(
+    `/api/safe/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/preview`,
+    { method: "POST" },
+  );
+  if (preview.versionId !== versionId || (preview.status !== "ready" && preview.status !== "unavailable")) {
+    throw new Error("The preview response does not match the requested version.");
+  }
+  if (preview.status === "ready") {
+    let url: URL;
+    try { url = new URL(preview.previewUrl); } catch { throw new Error("The preview URL is invalid."); }
+    if (url.protocol !== "https:" || url.username || url.password) throw new Error("A secure HTTPS preview URL is required.");
+  }
+  return preview;
+}
+
+export async function openSafePreview(projectId: string, versionId: string): Promise<{ status: "ready" } | { status: "unavailable"; message: string }> {
+  // Reserve the tab in the user gesture; asynchronous runtime startup can outlast popup permission.
+  const tab = window.open("about:blank", "_blank");
+  if (!tab) throw new Error("Allow a new preview tab and try again.");
+  try {
+    tab.opener = null;
+    const preview = await requestSafePreview(projectId, versionId);
+    if (preview.status === "unavailable") {
+      tab.close();
+      return { status: "unavailable", message: preview.message };
+    }
+    if (tab.closed) throw new Error("The preview tab was closed. Try again.");
+    tab.location.replace(preview.previewUrl);
+    return { status: "ready" };
+  } catch (error) {
+    tab.close();
+    throw error;
+  }
 }
 
 export async function confirmBuild(buildId: string): Promise<BuildResponse> {

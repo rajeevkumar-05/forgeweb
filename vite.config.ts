@@ -7,6 +7,7 @@ import { JsonStore } from "./server/store.ts";
 import { BuildWorkflow } from "./server/workflow.ts";
 import { resetLlmConfig, resetLlmProvider } from "./server/llm/index.ts";
 import { SafeGenerationActivationService, safeGenerationConfigFromEnvironment } from "./server/generation/activation.ts";
+import { dockerWorkflowFromEnvironment } from "./server/generation/docker-infrastructure.ts";
 
 function forgeWebDevApi(): Plugin {
   let handler: Promise<ForgeWebRequestHandler> | undefined;
@@ -16,12 +17,16 @@ function forgeWebDevApi(): Plugin {
       // Reset LLM singletons so .env changes are picked up on Vite restart.
       resetLlmConfig();
       resetLlmProvider();
+      const infrastructure = dockerWorkflowFromEnvironment();
+      server.httpServer?.once("close", () => {
+        void infrastructure.dispose().catch(() => console.error("Disposable Docker cleanup was incomplete; inspect forgeweb.disposable resources."));
+      });
       handler = (async () => {
         const store = new JsonStore(resolve(process.cwd(), ".forgeweb-data"));
         await store.initialize();
         return createForgeWebRequestHandler(
           new BuildWorkflow(store),
-          new SafeGenerationActivationService(store, safeGenerationConfigFromEnvironment()),
+          new SafeGenerationActivationService(store, safeGenerationConfigFromEnvironment(), infrastructure.options),
         );
       })();
       server.middlewares.use((request, response, next) => {

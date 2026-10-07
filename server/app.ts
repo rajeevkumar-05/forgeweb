@@ -144,6 +144,14 @@ export function createForgeWebRequestHandler(workflow: BuildWorkflow, safeGenera
         send(response, 202, result);
         return;
       }
+      const safePreviewMatch = requestUrl.pathname.match(/^\/api\/safe\/projects\/([^/]+)\/versions\/([^/]+)\/preview$/);
+      if (method === "POST" && safePreviewMatch) {
+        if (!safeGeneration) throw new ApiError(404, "SAFE_GENERATION_DISABLED", "The verified generation workflow is not enabled.");
+        const actor = safeGeneration.requireActor(request);
+        const preview = await safeGeneration.previewAccepted(decodeURIComponent(safePreviewMatch[1]), decodeURIComponent(safePreviewMatch[2]), actor);
+        send(response, 200, { preview });
+        return;
+      }
       if (method === "GET" && requestUrl.pathname === "/api/projects") {
         const projects = workflow.listProjects();
         send(response, 200, { projects: safeGeneration?.visibleProjects(request, projects) ?? projects });

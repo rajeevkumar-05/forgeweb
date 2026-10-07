@@ -60,6 +60,10 @@ export class ForgeWebSafeGenerationWorkflow {
     this.preview = new AcceptedRuntimePreviewService(store, verifyOwner, options.runtimeExecutor);
   }
 
+  previewAccepted(projectId: string, versionId: string, actor: EngineActor) {
+    return this.preview.preview(projectId, versionId, actor);
+  }
+
   private async promote(request: GenerationRequest, actor: EngineActor, candidateId: string): Promise<SafeGenerationWorkflowResult> {
     const validated = await this.acceptance.validateCandidate(candidateId, request);
     if (!validated.ok) return failed("validation", validated.error, candidateId);
