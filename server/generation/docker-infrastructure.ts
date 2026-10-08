@@ -294,6 +294,13 @@ export function runtimePreviewSessionBudget(tls: PreviewTls, policy: IsolatedRun
   if (!Number.isSafeInteger(ttlMs) || ttlMs < 1_000 || ttlMs > 300_000) throw new Error("PREVIEW_SESSION_BUDGET_INVALID");
   return Math.min(ttlMs, policy.resources.cpuMillis);
 }
+export function previewSessionBootstrap(): { html: string; contentSecurityPolicy: string } {
+  const nonce = randomBytes(16).toString("hex");
+  return {
+    html: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Opening preview</title></head><body><script nonce="${nonce}">window.location.replace("/");</script><a href="/">Continue to preview</a></body></html>`,
+    contentSecurityPolicy: `default-src 'none'; script-src 'nonce-${nonce}'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`,
+  };
+}
 export class PreviewRequestGate {
   private active = 0;
   private readonly pending: (() => void)[] = [];
@@ -365,8 +372,12 @@ export class DockerRuntimePreviewExecutor implements RuntimePreviewExecutor {
         response.setHeader("X-Content-Type-Options", "nosniff");
         response.setHeader("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'");
         if (incoming.method === "GET" && incoming.url === `/session/${token}`) {
-          response.writeHead(303, { "Set-Cookie": `${cookieName}=${token}; HttpOnly; Secure; SameSite=Strict; Path=/`, Location: "/" });
-          response.end(); return;
+          // Commit a preview-origin document before navigating, so a cross-site
+          // launch can send its Strict cookie without relaxing cookie security.
+          const bootstrap = previewSessionBootstrap();
+          response.writeHead(200, { "Set-Cookie": `${cookieName}=${token}; HttpOnly; Secure; SameSite=Strict; Path=/`,
+            "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": bootstrap.contentSecurityPolicy });
+          response.end(bootstrap.html); return;
         }
         if (!incoming.headers.cookie?.split(";").some((cookie) => cookie.trim() === `${cookieName}=${token}`)) { response.writeHead(401); response.end(); return; }
         if (!incoming.url?.startsWith("/") || incoming.url.startsWith("//")) { response.writeHead(429); response.end(); return; }

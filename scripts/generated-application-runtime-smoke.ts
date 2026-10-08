@@ -119,7 +119,10 @@ async function probe() {
   assert.equal((await request(new URL('/', origin))).status, 401);
   assert.equal((await request(new URL('/session/forged', origin))).status, 401);
   const exchange = await request(new URL(runtime.previewUrl));
-  assert.equal(exchange.status, 303);
+  assert.equal(exchange.status, 200);
+  assert.equal(exchange.headers.location, undefined);
+  assert.match(exchange.text, /window\.location\.replace\("\/"\)/);
+  assert.match(exchange.headers['content-security-policy'] ?? '', /script-src 'nonce-[a-f0-9]{32}'/);
   const setCookie = exchange.headers['set-cookie']![0];
   assert.match(setCookie, /HttpOnly/);
   assert.match(setCookie, /Secure/);

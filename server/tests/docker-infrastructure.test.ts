@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import test from "node:test";
-import { DockerDisposablePostgresProvider, DockerInfrastructure, DockerRuntimePreviewExecutor, DockerSandboxExecutor, PreviewRequestGate, dependencyManifest, dockerCommand, dockerIsolationArguments, dockerWorkflowFromEnvironment, runtimePreviewSessionBudget, validateDockerSnapshot } from "../generation/docker-infrastructure.ts";
+import { DockerDisposablePostgresProvider, DockerInfrastructure, DockerRuntimePreviewExecutor, DockerSandboxExecutor, PreviewRequestGate, dependencyManifest, dockerCommand, dockerIsolationArguments, dockerWorkflowFromEnvironment, previewSessionBootstrap, runtimePreviewSessionBudget, validateDockerSnapshot } from "../generation/docker-infrastructure.ts";
 import type { DockerCommand } from "../generation/docker-infrastructure.ts";
 import { ForgeWebIsolatedRunner, isolatedExecutionRequest, isolatedRunnerPolicy } from "../generation/runner.ts";
 import { disposablePostgresRequest } from "../generation/postgres-validation.ts";
@@ -246,6 +247,25 @@ test("ready preview sessions retain a bounded lifetime independent of startup ti
     assert.throws(() => runtimePreviewSessionBudget({ ...tls, ttlMs }, policy), /PREVIEW_SESSION_BUDGET_INVALID/);
   }
   assert.ok(dockerIsolationArguments(policy).includes("cpu=60:60"));
+});
+
+test("capability bootstrap commits a document before replacing the capability URL with the same-origin root", () => {
+  const bootstrap = previewSessionBootstrap();
+  const script = bootstrap.html.match(/<script nonce="([a-f0-9]{32})">([^<]+)<\/script>/);
+  assert.ok(script);
+  const destinations: string[] = [];
+  runInNewContext(script[2], { window: { location: { replace(path: string) { destinations.push(path); } } } });
+  assert.deepEqual(destinations, ["/"]);
+  assert.ok(bootstrap.html.includes('<a href="/">Continue to preview</a>'));
+  assert.equal(bootstrap.contentSecurityPolicy, `default-src 'none'; script-src 'nonce-${script[1]}'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`);
+});
+
+test("capability bootstrap uses a fresh CSP nonce without credentials or persistent storage", () => {
+  const first = previewSessionBootstrap();
+  const second = previewSessionBootstrap();
+  assert.notEqual(first.contentSecurityPolicy, second.contentSecurityPolicy);
+  assert.ok(!/unsafe-inline|unsafe-eval/.test(first.contentSecurityPolicy));
+  assert.ok(!/\/session\/|document\.cookie|localStorage|sessionStorage|fetch\(/.test(first.html));
 });
 
 test("preview asset bursts queue without exceeding two active forwards", async () => {
