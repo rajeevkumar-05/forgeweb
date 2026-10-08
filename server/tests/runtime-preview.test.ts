@@ -74,3 +74,38 @@ test("runtime preview rejects a legacy or mutable version without candidate acce
     await rm(fixture.directory, { recursive: true, force: true });
   }
 });
+
+test("preview health failures disclose only an allowlisted reason and retries request a fresh session", async () => {
+  const fixture = await integrationFixture();
+  try {
+    const accepted = await new ForgeWebSafeGenerationWorkflow(fixture.store, integrationOwnerVerifier, { validationRunner: validationRunner() })
+      .runApproved(fixture.request, integrationActor);
+    assert.ok(accepted.acceptance);
+    const versionId = accepted.acceptance.versionId;
+    const before = fixture.store.read();
+    let calls = 0;
+    const service = new AcceptedRuntimePreviewService(fixture.store, integrationOwnerVerifier, {
+      async start(request) {
+        calls++;
+        if (calls === 1) throw new Error("DOCKER_RUNTIME_HEALTH_FAILED");
+        return {
+          projectId: request.projectId, versionId: request.versionId, candidateId: request.candidateId,
+          snapshotDigest: request.snapshotDigest, policyDigest: request.policyDigest,
+          sessionId: `fresh-session-${calls}`, imageDigest: "sha256:contract-preview-image",
+          previewUrl: `https://preview.invalid/session/fresh-${calls}`,
+        };
+      },
+    });
+    const failed = await service.preview("project-integration", versionId, integrationActor);
+    assert.equal(failed.ok, false);
+    if (!failed.ok) assert.match(failed.error.message, /runtime health check failed/);
+    const retry = await service.preview("project-integration", versionId, integrationActor);
+    const fresh = await service.preview("project-integration", versionId, integrationActor);
+    assert.ok(retry.ok && retry.value.status === "ready");
+    assert.ok(fresh.ok && fresh.value.status === "ready");
+    assert.notEqual(retry.value.execution.previewUrl, fresh.value.execution.previewUrl);
+    assert.deepEqual(fixture.store.read(), before);
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});

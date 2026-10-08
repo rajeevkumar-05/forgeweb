@@ -3,7 +3,7 @@ import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
-import { DockerDisposablePostgresProvider, DockerInfrastructure, DockerRuntimePreviewExecutor, DockerSandboxExecutor, PreviewRequestGate, dependencyManifest, dockerCommand, dockerIsolationArguments, dockerWorkflowFromEnvironment, previewSessionBootstrap, runtimePreviewSessionBudget, validateDockerSnapshot } from "../generation/docker-infrastructure.ts";
+import { DockerDisposablePostgresProvider, DockerInfrastructure, DockerRuntimePreviewExecutor, DockerSandboxExecutor, DockerSubprocessError, PreviewRequestGate, dependencyManifest, dockerCommand, dockerIsolationArguments, dockerWorkflowFromEnvironment, previewSessionBootstrap, runtimePreviewHealthProbe, runtimePreviewSessionBudget, validateDockerSnapshot, workerExecutionDiagnostics } from "../generation/docker-infrastructure.ts";
 import type { DockerCommand } from "../generation/docker-infrastructure.ts";
 import { ForgeWebIsolatedRunner, isolatedExecutionRequest, isolatedRunnerPolicy } from "../generation/runner.ts";
 import { disposablePostgresRequest } from "../generation/postgres-validation.ts";
@@ -129,6 +129,105 @@ test("trusted Docker subprocesses do not inherit server-side provider keys or No
     if (before === undefined) delete process.env.FORGEWEB_DOCKER_TEST_SECRET;
     else process.env.FORGEWEB_DOCKER_TEST_SECRET = before;
   }
+});
+
+test("execution records completed stage timing and its original remaining aggregate budget", async (t) => {
+  let clock = 0;
+  t.mock.method(Date, "now", () => clock);
+  const fixture = commandFixture();
+  const docker = new DockerInfrastructure("forgeweb-worker:local", async (args, timeout, input) => {
+    const result = await fixture.command(args, timeout, input);
+    if (args[0] === "run") clock += 10_000;
+    return result;
+  });
+  try {
+    const result = await new DockerSandboxExecutor(docker).execute(isolatedExecutionRequest(candidate(), isolatedRunnerPolicy(600_000, 180_000)));
+    const operations = result.executionDiagnostics!.filter(record => record.operation !== "image-preparation");
+    assert.deepEqual(operations.map(record => record.operation), ["typecheck", "build", "tests", "health"]);
+    assert.deepEqual(operations.map(record => record.remainingMs), [180_000, 170_000, 160_000, 150_000]);
+    assert.ok(operations.every(record => record.elapsedMs === 10_000 && record.completed && !record.timedOut));
+    assert.equal(operations[0].startedAt, new Date(0).toISOString());
+  } finally { await docker.dispose(); }
+});
+
+test("health aggregate timeout retains preceding timings and its safe subprocess cause through the runner", async (t) => {
+  let clock = 0;
+  t.mock.method(Date, "now", () => clock);
+  const fixture = commandFixture();
+  const docker = new DockerInfrastructure("forgeweb-worker:local", async (args, timeout, input) => {
+    if (args[0] === "run") {
+      const mode = args.at(-1)!;
+      if (mode === "health") {
+        const startedAt = new Date(clock).toISOString();
+        assert.equal(timeout, 59_000);
+        clock += timeout;
+        throw new DockerSubprocessError("timeout", "ETIMEDOUT", [{ operation: "frontend-build", parent: "health", startedAt,
+          elapsedMs: 0, completed: false, timedOut: false, classification: "completed", message: "not forwarded" }]);
+      }
+      clock += { typecheck: 25_000, build: 70_000, tests: 26_000 }[mode as "typecheck" | "build" | "tests"];
+    }
+    return fixture.command(args, timeout, input);
+  });
+  try {
+    const result = await new ForgeWebIsolatedRunner(new DockerSandboxExecutor(docker), isolatedRunnerPolicy(600_000, 180_000)).validate(candidate());
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.error.diagnostics?.[0].code, "ISOLATED_RUNNER_TIMEOUT");
+    const records = result.error.executionDiagnostics!;
+    const health = records.find(record => record.operation === "health")!;
+    assert.equal(health.remainingMs, 59_000);
+    assert.equal(health.elapsedMs, 59_000);
+    assert.equal(health.completed, false);
+    assert.equal(health.timedOut, true);
+    assert.equal(health.reason, "aggregate_execution_deadline");
+    assert.equal(health.subprocessCode, "ETIMEDOUT");
+    assert.equal(records.find(record => record.operation === "frontend-build")?.elapsedMs, 59_000);
+    assert.equal(records.filter(record => record.completed).length, 4);
+    assert.ok(fixture.calls.some(args => args[0] === "rm"));
+  } finally { await docker.dispose(); }
+});
+
+test("Docker engine unavailability is distinct from health timeout", async () => {
+  const docker = new DockerInfrastructure("forgeweb-worker:local", async () => { throw new DockerSubprocessError("engine_unavailable", "ECONNREFUSED"); });
+  const result = await new ForgeWebIsolatedRunner(new DockerSandboxExecutor(docker)).validate(candidate());
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    const record = result.error.executionDiagnostics![0];
+    assert.equal(record.operation, "image-preparation");
+    assert.equal(record.classification, "engine_unavailable");
+    assert.equal(record.subprocessCode, "ECONNREFUSED");
+    assert.equal(record.timedOut, false);
+    assert.equal(record.reason, undefined);
+  }
+  await docker.dispose();
+});
+
+test("supervisor timing parsing drops arbitrary text, private paths, keys and unknown fields", () => {
+  const sensitive = "test-only-provider-secret";
+  const record = { operation: "startup", parent: "health", startedAt: new Date(0).toISOString(), elapsedMs: 10,
+    completed: true, timedOut: false, classification: "completed", message: sensitive, token: sensitive, path: "C:/private/key.pem" };
+  const output = [sensitive, "FORGEWEB_EXECUTION_DIAGNOSTIC " + JSON.stringify(record),
+    "FORGEWEB_EXECUTION_DIAGNOSTIC " + JSON.stringify({ ...record, operation: sensitive }),
+    "FORGEWEB_EXECUTION_DIAGNOSTIC " + JSON.stringify({ ...record, startedAt: sensitive })].join("\n");
+  const records = workerExecutionDiagnostics(output);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].message, "Operation completed");
+  assert.ok(!JSON.stringify(records).includes(sensitive));
+  assert.ok(!JSON.stringify(records).includes("private"));
+});
+
+test("real subprocess timeout preserves only safe partial supervisor timing, never stdout or stderr secrets", async () => {
+  const record = { operation: "backend-build", parent: "health", startedAt: new Date().toISOString(), elapsedMs: 0,
+    completed: false, timedOut: false, classification: "completed" };
+  const script = `console.log('FORGEWEB_EXECUTION_DIAGNOSTIC '+${JSON.stringify(JSON.stringify(record))});console.log('test-only-secret-output');console.error('test-only-secret-stderr');setInterval(()=>{},1000);`;
+  await assert.rejects(() => dockerCommand(process.execPath)(["-e", script], 1000), (error: unknown) => {
+    assert.ok(error instanceof DockerSubprocessError);
+    assert.equal(error.classification, "timeout");
+    assert.equal(error.subprocessCode, "ETIMEDOUT");
+    assert.equal(error.executionDiagnostics[0].operation, "backend-build");
+    assert.ok(!JSON.stringify(error).includes("test-only-secret"));
+    return true;
+  });
 });
 
 test("network-enabled package acquisition excludes candidate hooks, URLs and unknown packages", () => {
@@ -266,6 +365,25 @@ test("capability bootstrap uses a fresh CSP nonce without credentials or persist
   assert.notEqual(first.contentSecurityPolicy, second.contentSecurityPolicy);
   assert.ok(!/unsafe-inline|unsafe-eval/.test(first.contentSecurityPolicy));
   assert.ok(!/\/session\/|document\.cookie|localStorage|sessionStorage|fetch\(/.test(first.html));
+});
+
+test("runtime readiness avoids HTTP initialization before compilation and still requires actual HTTP health", async () => {
+  let fetches = 0;
+  const exits: number[] = [];
+  const context = (built: boolean, healthy: boolean) => ({
+    require(name: string) {
+      assert.equal(name, "node:fs");
+      return { existsSync(path: string) { assert.equal(path, "/tmp/project/frontend/dist/index.html"); return built; } };
+    },
+    process: { exit(code: number) { exits.push(code); if (!built) throw new Error("probe-exited"); } },
+    async fetch(url: string) { fetches++; assert.equal(url, "http://127.0.0.1:8080"); return { ok: healthy }; },
+  });
+  assert.throws(() => runInNewContext(runtimePreviewHealthProbe, context(false, false)), /probe-exited/);
+  assert.equal(fetches, 0);
+  await runInNewContext(runtimePreviewHealthProbe, context(true, false));
+  await runInNewContext(runtimePreviewHealthProbe, context(true, true));
+  assert.equal(fetches, 2);
+  assert.deepEqual(exits, [1, 1, 0]);
 });
 
 test("preview asset bursts queue without exceeding two active forwards", async () => {

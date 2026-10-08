@@ -8,6 +8,7 @@ import { createForgeWebServer } from "../app.ts";
 import { JsonStore } from "../store.ts";
 import { BuildWorkflow } from "../workflow.ts";
 import { resetLlmConfig, resetLlmProvider } from "../llm/index.ts";
+import { ownerFixture } from "./owner-fixture.ts";
 
 process.env.FORGEWEB_LLM_ENABLED = "false";
 process.env.FORGEWEB_LLM_API_KEY = "test-secret-must-never-be-served";
@@ -23,6 +24,7 @@ test("HTTP boundaries expose proposal, confirmation, and completed build phases"
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${address.port}`;
+  const { fetch } = await ownerFixture(baseUrl);
 
   try {
     const healthResponse = await fetch(`${baseUrl}/api/health`);
@@ -127,6 +129,7 @@ test("the HTTP layer enforces the confirmation gate and never leaks secrets or i
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${address.port}`;
+  const { fetch } = await ownerFixture(baseUrl);
   let buildId: string | undefined;
 
   try {

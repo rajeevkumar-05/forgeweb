@@ -1,5 +1,57 @@
 @import "tailwindcss";
 
+.project-sidebar { position: fixed; inset: 0 auto 0 0; z-index: 100; width: 264px; display: flex; flex-direction: column; gap: 16px; padding: 20px 14px; color: #e9eeee; background: #111817; border-right: 1px solid #ffffff18; text-align: left; font-size: 13px; }
+.project-sidebar header, .owner-account, .sidebar-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.project-sidebar header a { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 600; }
+.project-sidebar header img { width: 30px; height: 30px; object-fit: contain; }
+.project-sidebar button, .project-sidebar summary { cursor: pointer; }
+.project-sidebar button:disabled { opacity: .45; cursor: not-allowed; }
+.project-sidebar button:focus-visible, .project-sidebar summary:focus-visible { outline: 2px solid #dfff68; outline-offset: 3px; }
+.sidebar-new { display: flex; align-items: center; gap: 8px; padding: 11px; border: 1px solid #ffffff24; border-radius: 6px; }
+.owner-access { border-bottom: 1px solid #ffffff18; padding-bottom: 14px; }
+.owner-access form { display: grid; gap: 12px; }
+.owner-access h3 { font-size: 14px; font-weight: 600; }
+.owner-access label { display: grid; gap: 6px; font-size: 12px; color: #c4d0cf; }
+.owner-access input { width: 100%; min-width: 0; border: 1px solid #ffffff30; border-radius: 4px; background: #080f0e; color: white; padding: 9px; }
+.owner-access .button { justify-content: center; padding: 10px; }
+.owner-account span { overflow-wrap: anywhere; }
+.owner-account-switch { color: #b6dcdf; font-size: 12px; text-align: left; }
+.project-claim { display: grid; gap: 8px; font-size: 12px; color: #d0d8d7; }
+.project-claim button { text-align: left; color: #dfff68; text-decoration: underline; }
+.sidebar-heading h2 { font-size: 12px; font-weight: 600; color: #a9b8b5; }
+.sidebar-projects { min-height: 0; flex: 1; overflow-y: auto; overflow-x: hidden; }
+.sidebar-projects > p { display: flex; gap: 7px; align-items: center; color: #a9b8b5; padding: 10px; }
+.sidebar-project { display: flex; align-items: center; border-radius: 6px; margin-bottom: 4px; }
+.sidebar-project.is-active { background: #244043; }
+.sidebar-project:hover { background: #ffffff0a; }
+.sidebar-project-open { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; padding: 11px 8px; text-align: left; }
+.sidebar-project-open > svg { flex-shrink: 0; }
+.sidebar-project-open span { min-width: 0; }
+.sidebar-project-open strong { display: block; overflow-wrap: anywhere; font-size: 13px; font-weight: 500; }
+.sidebar-project-open small { display: block; margin-top: 3px; font-size: 10px; color: #a5bfbd; }
+.sidebar-actions summary { display: grid; place-items: center; width: 28px; height: 34px; list-style: none; }
+.sidebar-actions summary::-webkit-details-marker { display: none; }
+.sidebar-actions > div { position: fixed; left: 140px; z-index: 102; width: 115px; padding: 5px; border: 1px solid #ffffff24; border-radius: 6px; background: #202c2b; box-shadow: 0 8px 20px #0008; }
+.sidebar-actions button { display: flex; width: 100%; gap: 8px; align-items: center; padding: 8px; text-align: left; }
+.sidebar-actions button:hover { background: #ffffff12; }
+.project-delete-dialog { width: min(440px, calc(100vw - 32px)); margin: auto; padding: 24px; color: #e9eeee; background: #152321; border: 1px solid #ffffff30; border-radius: 8px; }
+.project-delete-dialog::backdrop { background: #000a; }
+.project-delete-dialog h2 { font-size: 18px; overflow-wrap: anywhere; }
+.project-delete-dialog p { margin-top: 12px; font-size: 14px; color: #b9cbc8; }
+.project-delete-dialog > div { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; }
+.project-delete-dialog button { padding: 10px 12px; border-radius: 4px; border: 1px solid #ffffff30; cursor: pointer; }
+.project-delete-dialog .delete-confirm { display: flex; align-items: center; gap: 8px; background: #9b323d; }
+.project-delete-dialog button:disabled { opacity: .5; }
+.sidebar-close, .project-sidebar-toggle, .project-sidebar-backdrop { display: none; }
+@media (min-width: 1000px) { .site-shell { margin-left: 264px; } }
+@media (max-width: 999px) {
+  .project-sidebar { transform: translateX(-100%); transition: transform .15s; }
+  .project-sidebar.is-open { transform: none; }
+  .sidebar-close { display: block; }
+  .project-sidebar-toggle { display: grid; place-items: center; position: fixed; left: 12px; bottom: 16px; width: 44px; height: 44px; border: 1px solid #ffffff30; border-radius: 6px; color: white; background: #152321; z-index: 90; }
+  .project-sidebar-backdrop { display: block; position: fixed; inset: 0; background: #0009; z-index: 99; }
+}
+
 @theme {
   --color-paper: #f4f5ef;
   --color-ink: #101312;

@@ -5,6 +5,8 @@ import { ApiError } from "./lib.ts";
 import { BuildWorkflow } from "./workflow.ts";
 import { getLlmStatus } from "./llm/index.ts";
 import { SafeGenerationActivationService } from "./generation/activation.ts";
+import { ForgeWebAuthentication } from "./auth.ts";
+import { OwnedProjects } from "./projects.ts";
 
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -89,10 +91,31 @@ async function body(request: IncomingMessage): Promise<unknown> {
 export type ForgeWebRequestHandler = (request: IncomingMessage, response: ServerResponse) => Promise<void>;
 
 export function createForgeWebRequestHandler(workflow: BuildWorkflow, safeGeneration?: SafeGenerationActivationService): ForgeWebRequestHandler {
+  const authentication = new ForgeWebAuthentication(workflow.store);
+  const projects = new OwnedProjects(workflow, safeGeneration);
   return async (request, response) => {
     const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
     const method = request.method ?? "GET";
     try {
+      authentication.checkRequest(request);
+      if (method === "GET" && requestUrl.pathname === "/api/auth/session") {
+        const user = authentication.optionalUser(request);
+        send(response, 200, { user: user ?? null, migration: user ? projects.eligible(user) : { standard: 0, verified: 0 } });
+        return;
+      }
+      if (method === "POST" && ["/api/auth/login", "/api/auth/register"].includes(requestUrl.pathname)) {
+        authentication.limit(request);
+        const payload = await body(request) as { username?: unknown; password?: unknown };
+        const result = await authentication.login(payload.username, payload.password, requestUrl.pathname.endsWith("register"), request);
+        safeGeneration?.logout(request);
+        send(response, 200, { user: result.user }, { "set-cookie": result.cookie });
+        return;
+      }
+      if (method === "POST" && requestUrl.pathname === "/api/auth/logout") {
+        safeGeneration?.logout(request);
+        send(response, 200, { user: null }, { "set-cookie": await authentication.logout(request) });
+        return;
+      }
       if (method === "GET" && (requestUrl.pathname === "/" || requestUrl.pathname === "/api")) {
         send(response, 200, {
           service: "forgeweb-control-plane",
@@ -111,7 +134,7 @@ export function createForgeWebRequestHandler(workflow: BuildWorkflow, safeGenera
         return;
       }
       if (method === "GET" && requestUrl.pathname === "/api/safe/status") {
-        send(response, 200, safeGeneration?.status(request) ?? {
+        send(response, 200, safeGeneration?.status(request, authentication.optionalUser(request)?.id) ?? {
           enabled: false,
           authenticated: false,
           target: "forgeweb-postgresql-v1",
@@ -121,16 +144,27 @@ export function createForgeWebRequestHandler(workflow: BuildWorkflow, safeGenera
         });
         return;
       }
+      const user = authentication.requireUser(request);
+      if (method === "POST" && requestUrl.pathname === "/api/projects/claim") {
+        const payload = await body(request) as { confirmed?: unknown; includeVerified?: unknown };
+        const result = await projects.claim(user, payload.confirmed, payload.includeVerified === true && Boolean(safeGeneration));
+        send(response, 200, result);
+        return;
+      }
+      const ownedProjectMatch = requestUrl.pathname.match(/^\/api\/(?:safe\/)?projects\/([^/]+)/);
+      if (ownedProjectMatch) projects.requireOwner(decodeURIComponent(ownedProjectMatch[1]), user);
+      const ownedBuildMatch = requestUrl.pathname.match(/^\/api\/(?:safe\/)?builds\/([^/]+)/);
+      if (ownedBuildMatch) projects.requireOwner(workflow.get(decodeURIComponent(ownedBuildMatch[1])).projectId, user);
       if (method === "POST" && requestUrl.pathname === "/api/safe/session") {
         if (!safeGeneration) throw new ApiError(404, "SAFE_GENERATION_DISABLED", "The verified generation workflow is not enabled.");
         const payload = await body(request) as { token?: unknown };
-        const session = safeGeneration.authenticate(payload.token);
+        const session = safeGeneration.authenticate(payload.token, user.id);
         send(response, 200, { authenticated: true }, { "set-cookie": session.cookie });
         return;
       }
       if (method === "POST" && requestUrl.pathname === "/api/safe/builds") {
         if (!safeGeneration) throw new ApiError(404, "SAFE_GENERATION_DISABLED", "The verified generation workflow is not enabled.");
-        const actor = safeGeneration.requireActor(request);
+        const actor = safeGeneration.requireActor(request, user.id);
         const payload = await body(request) as { prompt?: unknown };
         const build = await safeGeneration.create(payload.prompt, actor);
         send(response, 202, { build });
@@ -139,27 +173,27 @@ export function createForgeWebRequestHandler(workflow: BuildWorkflow, safeGenera
       const safeConfirmationMatch = requestUrl.pathname.match(/^\/api\/safe\/builds\/([^/]+)\/confirm$/);
       if (method === "POST" && safeConfirmationMatch) {
         if (!safeGeneration) throw new ApiError(404, "SAFE_GENERATION_DISABLED", "The verified generation workflow is not enabled.");
-        const actor = safeGeneration.requireActor(request);
-        const result = await safeGeneration.confirm(decodeURIComponent(safeConfirmationMatch[1]), actor);
+        const actor = safeGeneration.requireActor(request, user.id);
+        const buildId = decodeURIComponent(safeConfirmationMatch[1]);
+        const result = await projects.run(workflow.get(buildId).projectId, user, () => safeGeneration.confirm(buildId, safeGeneration.actorForBuild(buildId, actor)));
         send(response, 202, result);
         return;
       }
       const safePreviewMatch = requestUrl.pathname.match(/^\/api\/safe\/projects\/([^/]+)\/versions\/([^/]+)\/preview$/);
       if (method === "POST" && safePreviewMatch) {
         if (!safeGeneration) throw new ApiError(404, "SAFE_GENERATION_DISABLED", "The verified generation workflow is not enabled.");
-        const actor = safeGeneration.requireActor(request);
-        const preview = await safeGeneration.previewAccepted(decodeURIComponent(safePreviewMatch[1]), decodeURIComponent(safePreviewMatch[2]), actor);
+        const projectId = decodeURIComponent(safePreviewMatch[1]);
+        const preview = await projects.run(projectId, user, () => safeGeneration.previewForOwner(projectId, decodeURIComponent(safePreviewMatch[2]), user.id));
         send(response, 200, { preview });
         return;
       }
       if (method === "GET" && requestUrl.pathname === "/api/projects") {
-        const projects = workflow.listProjects();
-        send(response, 200, { projects: safeGeneration?.visibleProjects(request, projects) ?? projects });
+        send(response, 200, { projects: projects.list(user) });
         return;
       }
       if (method === "POST" && requestUrl.pathname === "/api/builds") {
         const payload = await body(request) as { prompt?: unknown };
-        const build = await workflow.create(payload.prompt);
+        const build = await workflow.create(payload.prompt, user.id);
         send(response, 202, { build });
         return;
       }
@@ -167,7 +201,6 @@ export function createForgeWebRequestHandler(workflow: BuildWorkflow, safeGenera
       if (method === "GET" && buildEventsMatch) {
         const buildId = decodeURIComponent(buildEventsMatch[1]);
         const build = workflow.get(buildId);
-        safeGeneration?.requireBuildAccess(request, build);
         streamBuildEvents(request, response, workflow, buildId);
         return;
       }
@@ -175,8 +208,7 @@ export function createForgeWebRequestHandler(workflow: BuildWorkflow, safeGenera
       if (method === "POST" && buildConfirmationMatch) {
         const buildId = decodeURIComponent(buildConfirmationMatch[1]);
         const current = workflow.get(buildId);
-        safeGeneration?.requireBuildAccess(request, current);
-        const build = await workflow.confirm(buildId);
+        const build = await projects.run(current.projectId, user, () => workflow.confirm(buildId));
         send(response, 202, { build });
         return;
       }
@@ -185,27 +217,24 @@ export function createForgeWebRequestHandler(workflow: BuildWorkflow, safeGenera
         const payload = await body(request) as { prompt?: unknown };
         const buildId = decodeURIComponent(buildReviseMatch[1]);
         const current = workflow.get(buildId);
-        safeGeneration?.requireBuildAccess(request, current);
-        const build = await workflow.revise(buildId, payload.prompt);
+        const build = await projects.run(current.projectId, user, () => workflow.revise(buildId, payload.prompt));
         send(response, 202, { build });
         return;
       }
       const workspaceMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/workspace$/);
       if (method === "GET" && workspaceMatch) {
         const projectId = decodeURIComponent(workspaceMatch[1]);
-        safeGeneration?.requireProjectAccess(request, workflow.getProject(projectId).project);
-        send(response, 200, { workspace: await workflow.workspace.getReady(projectId) });
+        send(response, 200, { workspace: await projects.run(projectId, user, () => workflow.workspace.getReady(projectId)) });
         return;
       }
       const previewMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/preview$/);
       if (method === "GET" && previewMatch) {
         const projectId = decodeURIComponent(previewMatch[1]);
         const project = workflow.getProject(projectId).project;
-        safeGeneration?.requireProjectAccess(request, project);
         if (project.currentBuildId && safeGeneration?.isSafeBuild(workflow.get(project.currentBuildId))) {
           throw new ApiError(409, "TRUSTED_RUNTIME_PREVIEW_REQUIRED", "Verified generated applications can only be previewed through the trusted runtime boundary.");
         }
-        const preview = await workflow.workspace.getPreview(projectId);
+        const preview = await projects.run(projectId, user, () => workflow.workspace.getPreview(projectId));
         sendPreview(response, preview.html, preview.versionId);
         return;
       }
@@ -213,46 +242,46 @@ export function createForgeWebRequestHandler(workflow: BuildWorkflow, safeGenera
       if (method === "POST" && editMatch) {
         const payload = await body(request) as { prompt?: unknown };
         const projectId = decodeURIComponent(editMatch[1]);
-        safeGeneration?.requireProjectAccess(request, workflow.getProject(projectId).project);
-        const result = await workflow.workspace.edit(projectId, payload.prompt);
+        const result = await projects.run(projectId, user, () => workflow.workspace.edit(projectId, payload.prompt));
         send(response, 201, result);
         return;
       }
       const restoreMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/versions\/([^/]+)\/restore$/);
       if (method === "POST" && restoreMatch) {
         const projectId = decodeURIComponent(restoreMatch[1]);
-        safeGeneration?.requireProjectAccess(request, workflow.getProject(projectId).project);
-        const workspace = await workflow.workspace.restore(projectId, decodeURIComponent(restoreMatch[2]));
+        const workspace = await projects.run(projectId, user, () => workflow.workspace.restore(projectId, decodeURIComponent(restoreMatch[2])));
         send(response, 200, { workspace });
         return;
       }
       const exportValidationMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/export\/validate$/);
       if (method === "POST" && exportValidationMatch) {
         const projectId = decodeURIComponent(exportValidationMatch[1]);
-        safeGeneration?.requireProjectAccess(request, workflow.getProject(projectId).project);
-        const summary = await workflow.workspace.validateExport(projectId);
+        const summary = await projects.run(projectId, user, () => workflow.workspace.validateExport(projectId));
         send(response, summary.validation === "passed" ? 200 : 422, { summary });
         return;
       }
       const exportMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)\/export$/);
       if (method === "POST" && exportMatch) {
         const projectId = decodeURIComponent(exportMatch[1]);
-        safeGeneration?.requireProjectAccess(request, workflow.getProject(projectId).project);
-        const result = await workflow.workspace.export(projectId);
+        const result = await projects.run(projectId, user, () => workflow.workspace.export(projectId));
         sendArchive(response, result.archive, result.filename);
         return;
       }
       const buildMatch = requestUrl.pathname.match(/^\/api\/builds\/([^/]+)$/);
       if (method === "GET" && buildMatch) {
         const build = workflow.get(decodeURIComponent(buildMatch[1]));
-        safeGeneration?.requireBuildAccess(request, build);
         send(response, 200, { build });
         return;
       }
       const projectMatch = requestUrl.pathname.match(/^\/api\/projects\/([^/]+)$/);
+      if (method === "DELETE" && projectMatch) {
+        const payload = await body(request) as { confirmed?: unknown };
+        await projects.delete(decodeURIComponent(projectMatch[1]), user, payload.confirmed);
+        send(response, 200, { deleted: true });
+        return;
+      }
       if (method === "GET" && projectMatch) {
         const result = workflow.getProject(decodeURIComponent(projectMatch[1]));
-        safeGeneration?.requireProjectAccess(request, result.project);
         send(response, 200, result);
         return;
       }

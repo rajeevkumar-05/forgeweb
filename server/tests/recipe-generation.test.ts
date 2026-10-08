@@ -268,6 +268,7 @@ test('Recipe candidate validates through existing isolated Docker and disposable
     const validation = await new ForgeWebCandidateValidator().validate(request, candidate, docker.options.validationRunner);
     assert.ok(validation.ok);
     for (const check of validation.value.checks) t.diagnostic(`${check.id}: ${check.status}`);
+    for (const operation of validation.value.executionDiagnostics ?? []) t.diagnostic(JSON.stringify(operation));
     assert.equal(validation.value.status, 'passed');
   } finally { await docker.dispose(); }
 });

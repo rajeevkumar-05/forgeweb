@@ -35,11 +35,13 @@ export type RuntimePreviewExecution = {
   readonly sessionId: string;
   readonly imageDigest: string;
   readonly previewUrl: string;
+  readonly expiresAt?: number;
 };
 
 /** Trusted adapter to an external runtime. Implementations must never execute inside the API process. */
 export interface RuntimePreviewExecutor {
   start(request: AcceptedRuntimePreviewRequest): Promise<RuntimePreviewExecution>;
+  stopProject?(projectId: string): Promise<void>;
 }
 
 export type RuntimePreviewResult =
@@ -156,7 +158,15 @@ export class AcceptedRuntimePreviewService {
       if (previewUrl.protocol !== "https:") return failure("Runtime preview URL must use HTTPS", "RUNTIME_URL_INSECURE");
       return { ok: true, engine: PREVIEW_ENGINE, value: { status: "ready", versionId, candidateId: record.id, snapshotDigest, execution: structuredClone(execution) } };
     } catch (error) {
-      return failure(error instanceof Error && error.message === "RUNTIME_PREVIEW_TIMEOUT" ? "External runtime preview timed out" : "External runtime preview failed", "RUNTIME_PREVIEW_FAILED");
+      const reasons: Record<string, string> = {
+        RUNTIME_PREVIEW_TIMEOUT: "External runtime preview timed out",
+        DOCKER_RUNTIME_HEALTH_FAILED: "The preview runtime health check failed within its bounded startup window. Check Docker readiness and try again.",
+        DOCKER_RUNTIME_START_FAILED: "The isolated preview runtime could not start. Check Docker readiness and try again.",
+        DOCKER_OPERATION_TIMEOUT: "Preview startup exceeded its bounded execution window. Check Docker readiness and try again.",
+        DOCKER_UNAVAILABLE_OR_TIMEOUT: "Docker was unavailable or did not respond within the preview startup limit. Check Docker readiness and try again.",
+      };
+      const message = error instanceof Error && Object.hasOwn(reasons, error.message) ? reasons[error.message] : "External runtime preview failed";
+      return failure(message, "RUNTIME_PREVIEW_FAILED");
     } finally {
       if (timer) clearTimeout(timer);
     }

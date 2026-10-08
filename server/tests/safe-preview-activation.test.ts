@@ -9,12 +9,15 @@ import { SafeGenerationActivationService } from "../generation/activation.ts";
 import { ForgeWebSafeGenerationWorkflow } from "../generation/pipeline.ts";
 import type { RuntimePreviewExecutor } from "../generation/runtime-preview.ts";
 import { integrationActor, integrationFixture, integrationOwnerVerifier, validationRunner } from "./generation-integration-fixture.ts";
+import { ownerFixture } from "./owner-fixture.ts";
+
+process.env.FORGEWEB_LLM_ENABLED = "false";
 
 const activationToken = "test-only-preview-activation-token-00000000";
 const previewUrl = "https://localhost:9443/session/test-only-capability";
 
 // Contract seams exercise real approval/validation/CAS services; no Docker or live execution is claimed here.
-async function fixture(options: { unavailable?: boolean; insecure?: boolean; failed?: boolean } = {}) {
+async function fixture(options: { unavailable?: boolean; insecure?: boolean; failed?: boolean; expired?: boolean; missingExpiry?: boolean } = {}) {
   const fixture = await integrationFixture();
   await fixture.store.mutate(db => { db.builds["build-integration"].generationMode = "safe"; });
   const accepted = await new ForgeWebSafeGenerationWorkflow(fixture.store, integrationOwnerVerifier, { validationRunner: validationRunner() })
@@ -22,6 +25,7 @@ async function fixture(options: { unavailable?: boolean; insecure?: boolean; fai
   assert.equal(accepted.status, "accepted");
   assert.ok(accepted.acceptance);
   let calls = 0;
+  const expiresAt = Date.now() + 60_000;
   const runtimeExecutor: RuntimePreviewExecutor = {
     async start(request) {
       calls++;
@@ -31,6 +35,7 @@ async function fixture(options: { unavailable?: boolean; insecure?: boolean; fai
         snapshotDigest: request.snapshotDigest, policyDigest: request.policyDigest,
         sessionId: "contract-preview-session", imageDigest: "sha256:contract-preview-image",
         previewUrl: options.insecure ? previewUrl.replace("https:", "http:") : previewUrl,
+        ...(!options.missingExpiry ? { expiresAt: options.expired ? Date.now() - 1 : expiresAt } : {}),
       };
     },
   };
@@ -40,14 +45,17 @@ async function fixture(options: { unavailable?: boolean; insecure?: boolean; fai
   const server = createForgeWebServer(new BuildWorkflow(fixture.store, 0), activation);
   await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const session = await fetch(`${origin}/api/safe/session`, {
+  const account = await ownerFixture(origin);
+  const session = await account.fetch(`${origin}/api/safe/session`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: activationToken }),
   });
-  const cookie = session.headers.get("set-cookie")!.split(";")[0];
+  const cookie = `${account.cookie}; ${session.headers.get("set-cookie")!.split(";")[0]}`;
+  const claim = await fetch(origin + "/api/projects/claim", { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ confirmed: true, includeVerified: true }) });
+  assert.equal(claim.status, 200);
   const versionId = accepted.acceptance!.versionId;
   const path = `/api/safe/projects/project-integration/versions/${versionId}/preview`;
   return {
-    ...fixture, activation, versionId, origin, path, cookie, calls: () => calls,
+    ...fixture, activation, versionId, origin, path, cookie, expiresAt, user: account.user, calls: () => calls,
     async dispose() {
       server.closeAllConnections();
       await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done()));
@@ -64,7 +72,7 @@ test("authenticated activation opens only an accepted immutable version and neve
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("cache-control"), "no-store");
     assert.equal(response.headers.get("referrer-policy"), "no-referrer");
-    assert.deepEqual(await response.json(), { preview: { status: "ready", versionId: f.versionId, previewUrl } });
+    assert.deepEqual(await response.json(), { preview: { status: "ready", versionId: f.versionId, previewUrl, expiresAt: f.expiresAt } });
     assert.equal(new URL(previewUrl).protocol, "https:");
     assert.equal(f.calls(), 1);
     assert.deepEqual(f.store.read(), before);
@@ -132,18 +140,33 @@ test("insecure URLs and executor failures remain closed and do not expose runtim
   }
 });
 
+test("expired or unattested session expiry cannot produce a ready public preview response", async () => {
+  for (const options of [{ expired: true }, { missingExpiry: true }]) {
+    const f = await fixture(options);
+    try {
+      const before = f.store.read();
+      const response = await fetch(f.origin + f.path, { method: "POST", headers: { cookie: f.cookie } });
+      assert.equal(response.status, 503);
+      const body = await response.text();
+      assert.ok(!body.includes("test-only-capability"));
+      assert.match(body, /RUNTIME_SESSION_EXPIRED/);
+      assert.deepEqual(f.store.read(), before);
+    } finally { await f.dispose(); }
+  }
+});
+
 test("safe versions cannot use the legacy HTML route and legacy preview remains functional", async () => {
   const f = await fixture();
   try {
     const denied = await fetch(`${f.origin}/api/projects/project-integration/preview`, { headers: { cookie: f.cookie } });
     assert.equal(denied.status, 409);
     const workflow = new BuildWorkflow(f.store, 0);
-    const build = await workflow.create("Build a team task manager with assignments and status tracking.");
+    const build = await workflow.create("Build a team task manager with assignments and status tracking.", f.user.id);
     for (let i = 0; i < 300 && workflow.get(build.id).status !== "awaiting_confirmation"; i++) await new Promise(done => setTimeout(done, 10));
     await workflow.confirm(build.id);
     for (let i = 0; i < 300 && !["completed", "failed"].includes(workflow.get(build.id).status); i++) await new Promise(done => setTimeout(done, 10));
     assert.equal(workflow.get(build.id).status, "completed");
-    const legacy = await fetch(`${f.origin}/api/projects/${build.projectId}/preview`);
+    const legacy = await fetch(`${f.origin}/api/projects/${build.projectId}/preview`, { headers: { cookie: f.cookie } });
     assert.equal(legacy.status, 200);
     assert.match(legacy.headers.get("content-security-policy") ?? "", /script-src 'none'/);
     assert.match(await legacy.text(), /<html/i);

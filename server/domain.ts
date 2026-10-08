@@ -233,6 +233,8 @@ export type GraphSnapshot = {
 
 export type Project = {
   id: string;
+  ownerId?: string;
+  ownershipClaim?: { userId: string; claimedAt: string; source: "local-migration" };
   slug: string;
   name: string;
   status: "planning" | "awaiting_confirmation" | "building" | "editing" | "ready" | "validation_failed" | "ready_to_export" | "failed";
@@ -279,6 +281,8 @@ export type Build = {
 };
 
 export type ForgeDatabase = {
+  users?: Record<string, ForgeUser>;
+  userSessions?: Record<string, { userId: string; expiresAt: number }>;
   planningRecords?: Record<string, PlanRecord>;
   schemaVersion: 3;
   projects: Record<string, Project>;
@@ -291,6 +295,15 @@ export type ForgeDatabase = {
   versions: Record<string, ProjectVersion>;
   versionFiles: Record<string, GeneratedFile[]>;
   generationCandidates: Record<string, GenerationCandidateRecord>;
+};
+
+export type ForgeUser = {
+  id: string;
+  username: string;
+  passwordSalt: string;
+  passwordHash: string;
+  createdAt: string;
+  canClaimLocalProjects: boolean;
 };
 
 export type BuildView = Build & {

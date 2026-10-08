@@ -659,7 +659,7 @@ function buildGraph(project: Project, build: Build, specification: MasterSpecifi
 
 export class BuildWorkflow {
   private running = new Set<string>();
-  private readonly store: JsonStore;
+  readonly store: JsonStore;
   private readonly stageDelayMs: number;
   readonly workspace: ProjectWorkspaceService;
 
@@ -669,7 +669,7 @@ export class BuildWorkflow {
     this.workspace = new ProjectWorkspaceService(store);
   }
 
-  async create(promptValue: unknown): Promise<BuildView> {
+  async create(promptValue: unknown, ownerId?: string): Promise<BuildView> {
     const prompt = assertPrompt(promptValue);
     const timestamp = now();
     const projectId = id("project");
@@ -677,6 +677,7 @@ export class BuildWorkflow {
     const name = productName(prompt);
     const project: Project = {
       id: projectId,
+      ...(ownerId ? { ownerId } : {}),
       slug: `${slugify(name)}-${projectId.slice(-5)}`,
       name,
       status: "planning",
@@ -733,7 +734,12 @@ export class BuildWorkflow {
   }
 
   listProjects(): Project[] {
-    return Object.values(this.store.read().projects).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    return Object.values(this.store.read().projects).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id));
+  }
+
+  isProjectRunning(projectId: string): boolean {
+    const builds = Object.values(this.store.read().builds).filter(build => build.projectId === projectId);
+    return builds.some(build => this.running.has(`prepare:${build.id}`) || this.running.has(`execute:${build.id}`));
   }
 
   async prepare(buildId: string, prompt?: string): Promise<void> {

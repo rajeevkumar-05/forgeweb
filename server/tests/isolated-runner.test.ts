@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AssembledCandidateArtifacts } from "../generation/candidate.ts";
-import { ForgeWebIsolatedRunner, isolatedExecutionRequest, isolatedRunnerPolicy } from "../generation/runner.ts";
+import { ForgeWebIsolatedRunner, SandboxExecutionError, isolatedExecutionRequest, isolatedRunnerPolicy } from "../generation/runner.ts";
 import type { IsolatedExecutionRequest, SandboxExecutor } from "../generation/runner.ts";
 import { digest } from "../lib.ts";
 
@@ -80,4 +80,20 @@ test("execution request contains no arbitrary host mounts or caller environment"
   assert.deepEqual(request.policy.mounts, [{ target: "/workspace", mode: "read-only-snapshot" }]);
   assert.deepEqual(request.policy.writablePaths, ["/tmp"]);
   assert.equal(JSON.stringify(request).includes(process.cwd()), false);
+});
+
+test("runner retains structured executor failure without exposing an arbitrary exception message", async () => {
+  const executor: SandboxExecutor = { async execute() {
+    throw new SandboxExecutionError("test-only-sensitive-token", [{ operation: "health", startedAt: new Date(0).toISOString(),
+      elapsedMs: 59_000, remainingMs: 59_000, timedOut: true, completed: false, classification: "timeout",
+      reason: "aggregate_execution_deadline", subprocessCode: "ETIMEDOUT", message: "test-only-sensitive-token" }]);
+  } };
+  const result = await new ForgeWebIsolatedRunner(executor).validate(candidate());
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.executionDiagnostics?.[0].reason, "aggregate_execution_deadline");
+    assert.equal(result.error.executionDiagnostics?.[0].operation, "health");
+    assert.equal(result.error.executionDiagnostics?.[0].subprocessCode, "ETIMEDOUT");
+    assert.ok(!JSON.stringify(result).includes("test-only-sensitive-token"));
+  }
 });

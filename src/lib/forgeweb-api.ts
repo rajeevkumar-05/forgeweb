@@ -23,6 +23,7 @@ export type ArchitecturePlan = {
 
 export type ProjectSummary = {
   id: string;
+  ownerId?: string;
   slug: string;
   name: string;
   status: "planning" | "awaiting_confirmation" | "building" | "editing" | "ready" | "validation_failed" | "ready_to_export" | "failed";
@@ -113,6 +114,22 @@ export type BuildResponse = {
 
 type ApiEnvelope = { build: BuildResponse };
 
+export type ForgeUser = { id: string; username: string; canClaimLocalProjects: boolean };
+export type OwnerSession = { user: ForgeUser | null; migration: { standard: number; verified: number } };
+
+export function getOwnerSession(): Promise<OwnerSession> { return request("/api/auth/session"); }
+export async function signIn(username: string, password: string, register = false): Promise<ForgeUser> {
+  const result = await request<{ user: ForgeUser }>(register ? "/api/auth/register" : "/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) });
+  return result.user;
+}
+export async function signOut(): Promise<void> { await request("/api/auth/logout", { method: "POST" }); }
+export function claimExistingProjects(includeVerified = false): Promise<{ claimed: number }> {
+  return request("/api/projects/claim", { method: "POST", body: JSON.stringify({ confirmed: true, includeVerified }) });
+}
+export async function deleteProject(projectId: string): Promise<void> {
+  await request(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE", body: JSON.stringify({ confirmed: true }) });
+}
+
 export type SafeGenerationStatus = {
   enabled: boolean;
   authenticated: boolean;
@@ -131,9 +148,8 @@ export class ApiRequestError extends Error {
   }
 }
 
-export type SafePreviewResponse =
-  | { status: "ready"; versionId: string; previewUrl: string }
-  | { status: "unavailable"; versionId: string; message: string };
+import type { SafePreviewResponse } from "../../server/generation/preview-contract";
+export type { SafePreviewResponse } from "../../server/generation/preview-contract";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -188,35 +204,42 @@ export async function requestSafePreview(projectId: string, versionId: string): 
     `/api/safe/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/preview`,
     { method: "POST" },
   );
-  if (preview.versionId !== versionId || (preview.status !== "ready" && preview.status !== "unavailable")) {
+  if (!preview || preview.versionId !== versionId || (preview.status !== "ready" && preview.status !== "unavailable")) {
     throw new Error("The preview response does not match the requested version.");
   }
   if (preview.status === "ready") {
     let url: URL;
     try { url = new URL(preview.previewUrl); } catch { throw new Error("The preview URL is invalid."); }
-    if (url.protocol !== "https:" || url.username || url.password) throw new Error("A secure HTTPS preview URL is required.");
+    if (url.protocol !== "https:" || url.hostname !== "localhost" || !url.port || url.username || url.password
+      || url.search || url.hash || !/^\/session\/[a-f0-9]{64}$/.test(url.pathname)) throw new Error("A trusted localhost HTTPS preview URL is required.");
+    if (!Number.isSafeInteger(preview.expiresAt) || preview.expiresAt <= Date.now()) throw new Error("The preview session has expired. Try again.");
   }
   return preview;
 }
 
-export async function openSafePreview(projectId: string, versionId: string): Promise<{ status: "ready" } | { status: "unavailable"; message: string }> {
-  // Reserve the tab in the user gesture; asynchronous runtime startup can outlast popup permission.
-  const tab = window.open("about:blank", "_blank");
-  if (!tab) throw new Error("Allow a new preview tab and try again.");
-  try {
-    tab.opener = null;
-    const preview = await requestSafePreview(projectId, versionId);
-    if (preview.status === "unavailable") {
-      tab.close();
-      return { status: "unavailable", message: preview.message };
-    }
-    if (tab.closed) throw new Error("The preview tab was closed. Try again.");
-    tab.location.replace(preview.previewUrl);
-    return { status: "ready" };
-  } catch (error) {
-    tab.close();
-    throw error;
-  }
+export async function openSafePreview(projectId: string, versionId: string): Promise<
+  | { status: "ready"; opened: true }
+  | { status: "ready"; opened: false; expiresAt: number; open: () => void }
+  | { status: "unavailable"; message: string }
+> {
+  const preview = await requestSafePreview(projectId, versionId);
+  if (preview.status === "unavailable") return { status: "unavailable", message: preview.message };
+  let opened = false;
+  const launch = () => {
+    if (opened || preview.expiresAt <= Date.now()) throw new Error("Request a fresh preview session and try again.");
+    // The initial navigation carries the real URL, including in external-browser bridges.
+    const tab = window.open(preview.previewUrl, "_blank");
+    if (!tab) return false;
+    try { tab.opener = null; }
+    catch { tab.close(); throw new Error("The preview tab could not be detached safely. Try again."); }
+    opened = true;
+    return true;
+  };
+  if (launch()) return { status: "ready", opened: true };
+  // Only an ephemeral callable retains the URL for a second, popup-safe user gesture.
+  return { status: "ready", opened: false, expiresAt: preview.expiresAt, open() {
+    if (!launch()) throw new Error("Allow a new preview tab and try again.");
+  } };
 }
 
 export async function confirmBuild(buildId: string): Promise<BuildResponse> {

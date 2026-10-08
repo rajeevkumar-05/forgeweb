@@ -15,7 +15,7 @@ import { NexArchFrontendAdapter } from "../generation/nexarch/frontend-adapter.t
 import type { PlanningSpecification } from "../generation/planning.ts";
 import { CombinedValidationRunner, ForgeWebPostgresValidator } from "../generation/postgres-validation.ts";
 import type { DisposablePostgresProvider } from "../generation/postgres-validation.ts";
-import { ForgeWebIsolatedRunner } from "../generation/runner.ts";
+import { ForgeWebIsolatedRunner, SandboxExecutionError } from "../generation/runner.ts";
 import type { SandboxExecutor } from "../generation/runner.ts";
 import { APPLICATION_TARGET, databaseTargetContract } from "../generation/targets.ts";
 import { JsonStore } from "../store.ts";
@@ -152,6 +152,29 @@ async function validate(f: Awaited<ReturnType<typeof fixture>>): Promise<void> {
   assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.value.status, "validated");
 }
+
+test("timeout diagnostics persist with unavailable validation and cannot promote the candidate", async () => {
+  let postgresCalled = false;
+  const runner = new CombinedValidationRunner(new ForgeWebIsolatedRunner({ async execute() {
+    throw new SandboxExecutionError("DOCKER_UNAVAILABLE_OR_TIMEOUT", [{ operation: "health", startedAt: new Date(0).toISOString(),
+      elapsedMs: 59_000, remainingMs: 59_000, completed: false, timedOut: true, classification: "timeout",
+      reason: "aggregate_execution_deadline", subprocessCode: "ETIMEDOUT", message: "safe" }]);
+  } }), new ForgeWebPostgresValidator({ async validate() { postgresCalled = true; throw new Error("must not run"); } }));
+  const f = await fixture(runner);
+  try {
+    const result = await f.acceptance.validateCandidate(f.candidate.id, f.request);
+    assert.ok(result.ok);
+    assert.equal(result.value.status, "validation_unavailable");
+    const persisted = f.store.read().generationCandidates[f.candidate.id];
+    assert.equal(persisted.validation?.executionDiagnostics?.[0].operation, "health");
+    assert.equal(persisted.validation?.executionDiagnostics?.[0].subprocessCode, "ETIMEDOUT");
+    assert.equal(postgresCalled, false);
+    const accepted = await f.acceptance.accept(f.candidate.id, f.request, actor);
+    assert.equal(accepted.ok, false);
+    assert.equal(Object.keys(f.store.read().versions).length, 0);
+    assert.equal(f.store.read().projects[f.candidate.projectId].currentVersionId, undefined);
+  } finally { await rm(f.directory, { recursive: true, force: true }); }
+});
 
 test("validated candidate is atomically promoted to a linked ProjectVersion", async () => {
   const f = await fixture();

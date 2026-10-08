@@ -4,6 +4,8 @@ import type { ForgeDatabase } from "./domain.ts";
 
 const emptyDatabase = (): ForgeDatabase => ({
   schemaVersion: 3,
+  users: {},
+  userSessions: {},
   planningRecords: {},
   projects: {},
   specifications: {},
@@ -36,6 +38,8 @@ export class JsonStore {
       this.database = {
         ...parsed,
         schemaVersion: 3,
+        users: parsed.users ?? {},
+        userSessions: parsed.userSessions ?? {},
         versions: parsed.versions ?? {},
         planningRecords: parsed.planningRecords ?? {},
         versionFiles: parsed.versionFiles ?? {},
@@ -75,7 +79,7 @@ export class JsonStore {
 
   private async persist(database: ForgeDatabase): Promise<void> {
     const temporary = `${this.filePath}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(database, null, 2)}\n`, "utf8");
+    await writeFile(temporary, `${JSON.stringify(database, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     await rename(temporary, this.filePath);
   }
 }

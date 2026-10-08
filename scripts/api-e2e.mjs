@@ -33,6 +33,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomBytes } from "node:crypto";
 
 const ACCEPTANCE_PROMPT = process.env.FORGEWEB_E2E_PROMPT
   ?? "Build a task management application with authentication, projects, tasks, due dates, and status tracking.";
@@ -47,6 +48,12 @@ const useModel = (process.env.FORGEWEB_E2E_LLM ?? "false").toLowerCase() === "tr
 
 let passed = 0;
 const failures = [];
+let ownerCookie = "";
+const fetch = (input, init = {}) => {
+  const headers = new Headers(init.headers);
+  if (ownerCookie) headers.set("cookie", ownerCookie);
+  return globalThis.fetch(input, { ...init, headers });
+};
 
 /** Record an assertion. Failures are collected so teardown always runs. */
 function expect(condition, label, detail) {
@@ -147,6 +154,9 @@ try {
     }
   }, 30_000);
   expect(true, "GET /api/health reports ok");
+  const account = await api("POST", "/api/auth/register", { username: "e2e-owner", password: randomBytes(32).toString("hex") });
+  expect(account.status === 200, "ForgeWeb owner login establishes a server-managed session");
+  ownerCookie = account.headers.get("set-cookie").split(";")[0];
 
   const status = await api("GET", "/api/llm/status");
   expect(status.status === 200 && typeof status.json?.llm?.mode === "string", "GET /api/llm/status reports a mode", status.text.slice(0, 160));

@@ -1,6 +1,7 @@
 import { digest } from "../lib.ts";
 import type { AssembledCandidateArtifacts } from "./candidate.ts";
-import type { CandidateValidation, EngineMetadata, EngineResult } from "./engine.ts";
+import { EXECUTION_OPERATIONS } from "./engine.ts";
+import type { CandidateValidation, EngineMetadata, EngineResult, ExecutionDiagnostic } from "./engine.ts";
 import type { IsolatedCandidateRunner, IsolatedRunnerEvidence } from "./validation.ts";
 
 export const RUNNER_POLICY_VERSION = "forgeweb-isolated-runner-v1" as const;
@@ -42,7 +43,41 @@ export type SandboxExecutionResult = {
   readonly imageDigest: string;
   readonly checks: readonly CandidateValidation["checks"][number][];
   readonly findings: CandidateValidation["findings"];
+  readonly executionDiagnostics?: readonly ExecutionDiagnostic[];
 };
+
+// Reconstruct diagnostics from an allowlist; never forward subprocess text or paths.
+export function safeExecutionDiagnostics(values: unknown): ExecutionDiagnostic[] {
+  if (!Array.isArray(values)) return [];
+  return values.slice(0, 256).flatMap((value) => {
+    if (!value || typeof value !== "object" || !EXECUTION_OPERATIONS.includes(value.operation)
+      || typeof value.startedAt !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value.startedAt)
+      || !Number.isFinite(Date.parse(value.startedAt)) || !Number.isSafeInteger(value.elapsedMs) || value.elapsedMs < 0
+      || typeof value.completed !== "boolean" || typeof value.timedOut !== "boolean"
+      || !["completed", "timeout", "engine_unavailable", "subprocess_unavailable", "output_limit", "exit_nonzero", "execution_failure"].includes(value.classification)) return [];
+    const classification: ExecutionDiagnostic["classification"] = value.classification;
+    return [{ operation: value.operation, startedAt: value.startedAt, elapsedMs: value.elapsedMs,
+      completed: value.completed, timedOut: value.timedOut, classification,
+      ...(["typecheck", "build", "tests", "health", "postgres", "runtime"].includes(value.parent) ? { parent: value.parent } : {}),
+      ...(Number.isSafeInteger(value.remainingMs) && value.remainingMs >= 0 ? { remainingMs: value.remainingMs } : {}),
+      ...(["aggregate_execution_deadline", "operation_deadline"].includes(value.reason) ? { reason: value.reason } : {}),
+      ...(["ETIMEDOUT", "ENOENT", "EACCES", "ECONNREFUSED", "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", "UNKNOWN"].includes(value.subprocessCode) ? { subprocessCode: value.subprocessCode } : {}),
+      ...(Number.isSafeInteger(value.exitCode) ? { exitCode: value.exitCode } : {}),
+      message: classification === "completed" ? "Operation completed" : classification === "timeout" ? "Operation deadline exceeded"
+        : classification === "engine_unavailable" ? "Local Docker engine is unreachable" : classification === "subprocess_unavailable" ? "Docker subprocess could not start"
+          : classification === "output_limit" ? "Subprocess output limit exceeded" : classification === "exit_nonzero" ? "Operation exited unsuccessfully" : "Isolated operation failed",
+    }];
+  });
+}
+
+export class SandboxExecutionError extends Error {
+  readonly executionDiagnostics: readonly ExecutionDiagnostic[];
+  constructor(message: string, executionDiagnostics: readonly ExecutionDiagnostic[]) {
+    super(message);
+    this.name = "SandboxExecutionError";
+    this.executionDiagnostics = safeExecutionDiagnostics(executionDiagnostics);
+  }
+}
 
 /** Trusted adapter to an OS/container sandbox. Implementations must not run in the API process. */
 export interface SandboxExecutor {
@@ -102,11 +137,11 @@ export function isolatedExecutionRequest(candidate: AssembledCandidateArtifacts,
   });
 }
 
-function runnerFailure(code: "unsupported_capability" | "runner_failure" | "security_failure", message: string, diagnosticCode: string): EngineResult<IsolatedRunnerEvidence> {
+function runnerFailure(code: "unsupported_capability" | "runner_failure" | "security_failure", message: string, diagnosticCode: string, executionDiagnostics?: readonly ExecutionDiagnostic[]): EngineResult<IsolatedRunnerEvidence> {
   return {
     ok: false,
     engine: RUNNER_ENGINE,
-    error: { code, stage: "isolated-validation", message, retryable: false, diagnostics: [{ code: diagnosticCode, message }] },
+    error: { code, stage: "isolated-validation", message, retryable: false, diagnostics: [{ code: diagnosticCode, message }], ...(executionDiagnostics ? { executionDiagnostics: safeExecutionDiagnostics(executionDiagnostics) } : {}) },
   };
 }
 
@@ -151,11 +186,16 @@ export class ForgeWebIsolatedRunner implements IsolatedCandidateRunner {
           },
           checks: structuredClone(result.checks),
           findings: structuredClone(result.findings),
+          ...(result.executionDiagnostics ? { executionDiagnostics: safeExecutionDiagnostics(result.executionDiagnostics) } : {}),
         },
       };
     } catch (error) {
       const timedOut = error instanceof Error && error.message === "ISOLATED_RUNNER_TIMEOUT";
-      return runnerFailure("runner_failure", timedOut ? `Isolated execution exceeded ${this.policy.timeoutMs}ms` : "External isolated execution failed", timedOut ? "ISOLATED_RUNNER_TIMEOUT" : "ISOLATED_RUNNER_FAILED");
+      const operations = error instanceof SandboxExecutionError ? error.executionDiagnostics : undefined;
+      const timeoutOperation = operations?.findLast((operation) => operation.timedOut);
+      const message = timedOut ? `Isolated execution exceeded ${this.policy.timeoutMs}ms`
+        : timeoutOperation ? `Isolated ${timeoutOperation.operation} execution exceeded its deadline` : "External isolated execution failed";
+      return runnerFailure("runner_failure", message, timedOut || timeoutOperation ? "ISOLATED_RUNNER_TIMEOUT" : "ISOLATED_RUNNER_FAILED", operations);
     } finally {
       if (timer) clearTimeout(timer);
     }

@@ -30,6 +30,7 @@ import { LanguageShowcase } from "./components/LanguageShowcase";
 import SiteNav from "./components/SiteNav";
 import BuildProposal from "./components/BuildProposal";
 import ProjectLibrary from "./components/ProjectLibrary";
+import OwnerAccess from "./components/OwnerAccess";
 import {
   activateSafeGeneration,
   confirmBuild,
@@ -38,11 +39,13 @@ import {
   createSafeBuild,
   getLlmStatus,
   getSafeGenerationStatus,
+  getOwnerSession,
   reviseBuild,
   waitForBuild,
   type BuildResponse,
   type LlmStatus,
   type SafeGenerationStatus,
+  type OwnerSession,
 } from "./lib/forgeweb-api";
 
 const floatingLinesGradient = ["#50c7f0", "#000000", "#0ac0e0"];
@@ -105,6 +108,16 @@ function Hero() {
   const [workflowMode, setWorkflowMode] = useState<"legacy" | "safe">("legacy");
   const [safeStatus, setSafeStatus] = useState<SafeGenerationStatus | null>(null);
   const [activationToken, setActivationToken] = useState("");
+  const [ownerSession, setOwnerSession] = useState<OwnerSession>({ user: null, migration: { standard: 0, verified: 0 } });
+  const [ownerLoading, setOwnerLoading] = useState(true);
+  const refreshOwner = async () => {
+    const session = await getOwnerSession();
+    setOwnerSession(session);
+    setSafeStatus(await getSafeGenerationStatus());
+    setActivationToken("");
+    setBuild(null);
+    setProjectRefreshToken(value => value + 1);
+  };
   const activeStage = buildStages[Math.max(stage, 0)];
   const ActiveStageIcon = activeStage.icon;
 
@@ -116,6 +129,7 @@ function Hero() {
       console.error("[ForgeWeb] LLM status fetch failed:", err);
     });
     getSafeGenerationStatus().then(setSafeStatus).catch(() => setSafeStatus(null));
+    getOwnerSession().then(setOwnerSession).catch(() => setStatusDetail("Account service unavailable. Refresh and try again.")).finally(() => setOwnerLoading(false));
   }, []);
 
   const launchDemo = async (event: FormEvent) => {
@@ -136,6 +150,7 @@ function Hero() {
         }
       }
       const created = workflowMode === "safe" ? await createSafeBuild(prompt) : await createBuild(prompt);
+      setProjectRefreshToken((value) => value + 1);
       const completed = await waitForBuild(created.id, (build) => {
         setBuild(build);
         setStage(visibleBuildStage(build));
@@ -181,6 +196,7 @@ function Hero() {
       setStage(3);
       setStatusDetail(completed.stageDetail);
     } catch (error) {
+      if (build.generationMode === "safe") setProjectRefreshToken((value) => value + 1);
       setStatusDetail(error instanceof Error ? `Build stopped — ${error.message}` : "Build stopped unexpectedly.");
     } finally {
       setRunning(false);
@@ -329,7 +345,7 @@ function Hero() {
                     </button>
                   ))}
                 </div>
-                <button type="submit" className="button button-acid shrink-0" disabled={running || prompt.trim().length < 12 || (workflowMode === "safe" && !safeStatus?.authenticated && activationToken.length < 1)}>
+                <button type="submit" className="button button-acid shrink-0" disabled={!ownerSession.user || running || prompt.trim().length < 12 || (workflowMode === "safe" && !safeStatus?.authenticated && activationToken.length < 1)}>
                   {running ? "Forging…" : "Forge this idea"}
                   {running ? <CircleDot className="size-4 animate-pulse" /> : <ArrowRight className="size-4" />}
                 </button>
@@ -354,7 +370,12 @@ function Hero() {
             <span className="flex items-center gap-1.5"><GitBranch className="size-3.5" /> Git-native history</span>
             <span className="flex items-center gap-1.5"><KeyRound className="size-3.5" /> Managed or BYOK</span>
           </div>
-          <ProjectLibrary activeProjectId={build?.projectId} refreshToken={projectRefreshToken} onOpen={openSavedProject} />
+          <ProjectLibrary activeProjectId={build?.projectId} refreshToken={projectRefreshToken} userId={ownerSession.user?.id} busy={running} migration={ownerSession.migration}
+            account={<OwnerAccess user={ownerSession.user} loading={ownerLoading} busy={running} onChanged={refreshOwner} />}
+            onOpen={openSavedProject}
+            onNew={() => { setBuild(null); setStage(-1); setPrompt(""); setStatusDetail("Ready for a new project."); document.getElementById("product-prompt")?.focus(); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+            onDeleted={projectId => { if (build?.projectId === projectId) { setBuild(null); setStage(-1); setStatusDetail("Project deleted."); } setProjectRefreshToken(value => value + 1); }}
+            onClaimed={async () => { setOwnerSession(await getOwnerSession()); setProjectRefreshToken(value => value + 1); }} />
           <BuildProposal build={build} busy={running} onConfirm={confirmProposal} onRevise={build?.generationMode === "safe" ? undefined : reviseProposal} onProjectUpdated={() => setProjectRefreshToken((value) => value + 1)} />
         </div>
       </div>

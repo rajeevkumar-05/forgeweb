@@ -17,7 +17,7 @@ import {
   Tablet,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   applyProjectEdit,
   ApiRequestError,
@@ -53,6 +53,8 @@ export default function ProjectWorkspace({ projectId, safeGeneration = false, in
   const [previewError, setPreviewError] = useState("");
   const [safePreviewState, setSafePreviewState] = useState<"idle" | "starting" | "ready" | "unavailable" | "failed" | "unauthorized">("idle");
   const [safePreviewMessage, setSafePreviewMessage] = useState("");
+  const pendingPreview = useRef<{ versionId: string; open: () => void } | undefined>(undefined);
+  const previewExpiryTimer = useRef<number | undefined>(undefined);
   const [workspaceError, setWorkspaceError] = useState("");
   const [loading, setLoading] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
@@ -67,20 +69,26 @@ export default function ProjectWorkspace({ projectId, safeGeneration = false, in
   const [exportError, setExportError] = useState("");
   const [exportSummary, setExportSummary] = useState<ExportSummary | null>(null);
   const isSafeVersion = safeGeneration || Boolean(workspace?.currentVersion?.candidateId);
+  const workspaceSequence = useRef(0);
 
   const loadWorkspace = useCallback(async () => {
+    const sequence = ++workspaceSequence.current;
     setLoading(true);
     setWorkspaceError("");
     try {
-      setWorkspace(await getProjectWorkspace(projectId));
+      const result = await getProjectWorkspace(projectId);
+      if (sequence === workspaceSequence.current) setWorkspace(result);
     } catch (error) {
-      setWorkspaceError(error instanceof Error ? error.message : "The stored project workspace could not be loaded.");
+      if (sequence === workspaceSequence.current) setWorkspaceError(error instanceof Error ? error.message : "The stored project workspace could not be loaded.");
     } finally {
-      setLoading(false);
+      if (sequence === workspaceSequence.current) setLoading(false);
     }
   }, [projectId]);
 
-  useEffect(() => { void loadWorkspace(); }, [loadWorkspace]);
+  useEffect(() => {
+    void loadWorkspace();
+    return () => { workspaceSequence.current++; };
+  }, [loadWorkspace]);
 
   useEffect(() => {
     if (tab !== "preview" || loading || !workspace || isSafeVersion) return;
@@ -100,6 +108,11 @@ export default function ProjectWorkspace({ projectId, safeGeneration = false, in
   useEffect(() => {
     setSafePreviewState("idle");
     setSafePreviewMessage("");
+    pendingPreview.current = undefined;
+    return () => {
+      pendingPreview.current = undefined;
+      window.clearTimeout(previewExpiryTimer.current);
+    };
   }, [projectId, workspace?.currentVersion?.id]);
 
   const openRuntimePreview = async () => {
@@ -107,9 +120,28 @@ export default function ProjectWorkspace({ projectId, safeGeneration = false, in
     setSafePreviewState("starting");
     setSafePreviewMessage("Preview starting...");
     try {
+      const pending = pendingPreview.current;
+      pendingPreview.current = undefined;
+      window.clearTimeout(previewExpiryTimer.current);
+      if (pending && pending.versionId === workspace.currentVersion.id) {
+        pending.open();
+        setSafePreviewState("ready");
+        setSafePreviewMessage("Preview opened in a new tab.");
+        return;
+      }
       const result = await openSafePreview(projectId, workspace.currentVersion.id);
       setSafePreviewState(result.status);
-      setSafePreviewMessage(result.status === "ready" ? "Preview ready." : result.message);
+      if (result.status === "ready" && !result.opened) {
+        pendingPreview.current = { versionId: workspace.currentVersion.id, open: result.open };
+        setSafePreviewMessage("Preview ready. Your browser blocked automatic opening; select Open Preview to open the new tab.");
+        previewExpiryTimer.current = window.setTimeout(() => {
+          pendingPreview.current = undefined;
+          setSafePreviewState("idle");
+          setSafePreviewMessage("The preview session expired. Select Open Preview to create a fresh session.");
+        }, Math.max(0, result.expiresAt - Date.now()));
+      } else {
+        setSafePreviewMessage(result.status === "ready" ? "Preview opened in a new tab." : result.message);
+      }
     } catch (error) {
       const unauthorized = error instanceof ApiRequestError && [401, 403].includes(error.status);
       setSafePreviewState(unauthorized ? "unauthorized" : "failed");

@@ -4,10 +4,13 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+
+process.env.FORGEWEB_LLM_ENABLED = "false";
 import { createForgeWebServer } from "../app.ts";
 import { SafeGenerationActivationService } from "../generation/activation.ts";
 import { JsonStore } from "../store.ts";
 import { BuildWorkflow } from "../workflow.ts";
+import { ownerFixture } from "./owner-fixture.ts";
 
 const activationToken = "test-only-safe-activation-token-000000000000";
 
@@ -26,6 +29,7 @@ test("authenticated public activation reaches the safe pipeline and fails closed
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${address.port}`;
+  const { fetch } = await ownerFixture(baseUrl);
 
   try {
     const statusResponse = await fetch(`${baseUrl}/api/safe/status`);
@@ -82,7 +86,7 @@ test("authenticated public activation reaches the safe pipeline and fails closed
     assert.equal(plan?.proposal.database?.target.provider, "postgresql");
     assert.equal(plan?.approval, undefined);
 
-    const ownerlessRead = await fetch(`${baseUrl}/api/builds/${created.build.id}`);
+    const ownerlessRead = await globalThis.fetch(`${baseUrl}/api/builds/${created.build.id}`);
     assert.equal(ownerlessRead.status, 401);
     const ownerRead = await fetch(`${baseUrl}/api/builds/${created.build.id}`, { headers: { cookie: cookie! } });
     assert.equal(ownerRead.status, 200);
@@ -95,7 +99,7 @@ test("authenticated public activation reaches the safe pipeline and fails closed
     assert.equal(legacyRevisionAttempt.status, 409);
     assert.equal((await legacyRevisionAttempt.json() as { error: { code: string } }).error.code, "SAFE_REVISION_UNAVAILABLE");
 
-    const ownerlessConfirmation = await fetch(`${baseUrl}/api/safe/builds/${created.build.id}/confirm`, { method: "POST" });
+    const ownerlessConfirmation = await globalThis.fetch(`${baseUrl}/api/safe/builds/${created.build.id}/confirm`, { method: "POST" });
     assert.equal(ownerlessConfirmation.status, 401);
     assert.equal(Object.keys(store.read().generationCandidates).length, 0);
 

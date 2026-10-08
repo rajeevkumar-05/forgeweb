@@ -7,6 +7,7 @@ import { FRONTEND_TARGET_PROFILE } from "./frontend.ts";
 import { APPLICATION_TARGET, databaseTargetContract } from "./targets.ts";
 import { crudOperations, operationForMethod } from "./nexarch/upstream/shared/utils/operations.ts";
 import { snakeCase } from "./nexarch/upstream/shared/utils/strings.ts";
+import { safeExecutionDiagnostics } from "./runner.ts";
 
 export const REQUIRED_CHECKS = ["typecheck", "build", "tests", "dependencies", "security", "startup-health", "postgresql-runtime"] as const;
 export const ISOLATED_CHECKS = ["typecheck", "build", "tests", "startup-health", "postgresql-runtime"] as const;
@@ -57,6 +58,7 @@ export type IsolatedRunnerEvidence = {
   readonly checks: readonly ValidationCheck[];
   readonly findings: CandidateValidation["findings"];
   readonly postgres?: DisposablePostgresAttestation;
+  readonly executionDiagnostics?: CandidateValidation["executionDiagnostics"];
 };
 
 export interface IsolatedValidator {
@@ -278,6 +280,7 @@ export class ForgeWebCandidateValidator implements CandidateValidationService {
       .map((entry) => ({ code: entry.id.toUpperCase().replaceAll("-", "_"), severity: "error", message: entry.evidence, paths: entry.subjectPaths, requirementIds: [] }));
     let execution: CandidateValidationReport["execution"] = { kind: "not-run", reason: "No isolated candidate runner was provided" };
     let postgres: CandidateValidationReport["postgres"] = { kind: "not-run", reason: "No disposable PostgreSQL evidence was provided" };
+    let executionDiagnostics: CandidateValidation["executionDiagnostics"];
 
     if (!runner) {
       checks.push(...unavailableRunnerChecks(execution.reason));
@@ -286,6 +289,7 @@ export class ForgeWebCandidateValidator implements CandidateValidationService {
       checks.push(...ISOLATED_CHECKS.map((id) => ({ id, status: "skipped" as const, required: true, evidence: "Static validation failed before isolated execution", subjectPaths: [] })));
     } else {
       const isolated = await runner.validate(candidate as AssembledCandidateArtifacts);
+      executionDiagnostics = safeExecutionDiagnostics(isolated.ok ? isolated.value.executionDiagnostics : isolated.error.executionDiagnostics);
       if (!isolated.ok) {
         checks.push(...unavailableRunnerChecks(isolated.error.message));
         findings.push({ code: "ISOLATED_RUNNER_UNAVAILABLE", severity: "error", message: isolated.error.message, paths: [], requirementIds: [] });
@@ -326,6 +330,7 @@ export class ForgeWebCandidateValidator implements CandidateValidationService {
       postgres,
       checks,
       findings,
+      ...(executionDiagnostics?.length ? { executionDiagnostics } : {}),
     };
     return { ok: true, engine: VALIDATOR_ENGINE, value: prepareValidation(report, candidate) as CandidateValidationReport };
   }

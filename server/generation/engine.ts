@@ -66,6 +66,24 @@ export type EngineFailure = {
   readonly retryable: boolean;
   readonly stage: string;
   readonly diagnostics?: readonly { readonly code: string; readonly message: string; readonly path?: string }[];
+  readonly executionDiagnostics?: readonly ExecutionDiagnostic[];
+};
+
+export const EXECUTION_OPERATIONS = ["image-preparation", "typecheck", "build", "tests", "startup", "health", "worker-startup", "database-init", "database-schema", "backend-typecheck", "frontend-typecheck", "backend-build", "frontend-build", "health-probe", "cleanup"] as const;
+export type ExecutionDiagnostic = {
+  readonly operation: typeof EXECUTION_OPERATIONS[number];
+  readonly parent?: "typecheck" | "build" | "tests" | "health" | "postgres" | "runtime";
+  readonly startedAt: string;
+  readonly elapsedMs: number;
+  /** Aggregate budget remaining when this operation started, not a new allowance. */
+  readonly remainingMs?: number;
+  readonly completed: boolean;
+  readonly timedOut: boolean;
+  readonly classification: "completed" | "timeout" | "engine_unavailable" | "subprocess_unavailable" | "output_limit" | "exit_nonzero" | "execution_failure";
+  readonly reason?: "aggregate_execution_deadline" | "operation_deadline";
+  readonly subprocessCode?: "ETIMEDOUT" | "ENOENT" | "EACCES" | "ECONNREFUSED" | "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" | "UNKNOWN";
+  readonly exitCode?: number;
+  readonly message: string;
 };
 
 export type EngineResult<Value> =
@@ -242,6 +260,7 @@ export type EngineeringGraphDraft = {
 
 export type CandidateValidation = {
   readonly candidateId: string;
+  readonly executionDiagnostics?: readonly ExecutionDiagnostic[];
   readonly checks: readonly {
     readonly id: string;
     readonly status: "passed" | "failed" | "unavailable" | "skipped" | "blocked";

@@ -8,13 +8,41 @@ import { digest } from "../lib.ts";
 import type { SafeGenerationWorkflowOptions } from "./pipeline.ts";
 import { CombinedValidationRunner, ForgeWebPostgresValidator } from "./postgres-validation.ts";
 import type { DisposablePostgresExecution, DisposablePostgresProvider, DisposablePostgresRequest } from "./postgres-validation.ts";
-import { ForgeWebIsolatedRunner, isolatedRunnerPolicy } from "./runner.ts";
+import { ForgeWebIsolatedRunner, SandboxExecutionError, isolatedRunnerPolicy, safeExecutionDiagnostics } from "./runner.ts";
+import type { ExecutionDiagnostic } from "./engine.ts";
 import type { IsolatedExecutionRequest, IsolatedRunnerPolicy, SandboxExecutionResult, SandboxExecutor } from "./runner.ts";
 import type { AcceptedRuntimePreviewRequest, RuntimePreviewExecution, RuntimePreviewExecutor } from "./runtime-preview.ts";
 
 type SnapshotFile = { readonly path: string; readonly content: string; readonly digest: string };
 type CommandResult = { readonly code: number; readonly stdout: string };
 export type DockerCommand = (args: readonly string[], timeoutMs: number, input?: string) => Promise<CommandResult>;
+
+export function workerExecutionDiagnostics(output: string): ExecutionDiagnostic[] {
+  const records = new Map<string, ExecutionDiagnostic>();
+  for (const line of output.split("\n")) {
+    if (!line.startsWith("FORGEWEB_EXECUTION_DIAGNOSTIC ") || line.length > 2048) continue;
+    try {
+      const record = safeExecutionDiagnostics([JSON.parse(line.slice("FORGEWEB_EXECUTION_DIAGNOSTIC ".length))])[0];
+      if (record && records.size < 128) records.set(`${record.parent}:${record.operation}:${record.startedAt}`, record);
+    } catch { /* Only bounded trusted supervisor timing records are admitted. */ }
+  }
+  return [...records.values()];
+}
+
+export class DockerSubprocessError extends Error {
+  readonly classification: ExecutionDiagnostic["classification"];
+  readonly subprocessCode: NonNullable<ExecutionDiagnostic["subprocessCode"]>;
+  readonly timedOut: boolean;
+  readonly executionDiagnostics: readonly ExecutionDiagnostic[];
+  constructor(classification: ExecutionDiagnostic["classification"], subprocessCode: NonNullable<ExecutionDiagnostic["subprocessCode"]>, diagnostics: readonly ExecutionDiagnostic[] = []) {
+    super("DOCKER_UNAVAILABLE_OR_TIMEOUT");
+    this.name = "DockerSubprocessError";
+    this.classification = classification;
+    this.subprocessCode = subprocessCode;
+    this.timedOut = classification === "timeout";
+    this.executionDiagnostics = safeExecutionDiagnostics(diagnostics);
+  }
+}
 
 const packages = new Set(("@prisma/client bcryptjs jsonwebtoken compression cors dotenv express express-rate-limit helmet swagger-ui-express winston zod morgan @eslint/js @types/bcryptjs @types/compression @types/cors @types/express @types/jest @types/jsonwebtoken @types/morgan @types/node @types/supertest @types/swagger-ui-express eslint jest prisma supertest ts-jest tsx typescript typescript-eslint @hookform/resolvers @tanstack/react-query axios clsx framer-motion lucide-react react react-dom react-hook-form react-router-dom tailwind-merge zustand @tailwindcss/vite @types/react @types/react-dom @vitejs/plugin-react eslint-plugin-react-hooks eslint-plugin-react-refresh globals tailwindcss vite").split(" "));
 
@@ -78,8 +106,16 @@ export function dockerCommand(executable = "docker"): DockerCommand {
     for (const key of ["PATH", "SystemRoot", "WINDIR", "USERPROFILE", "HOME", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP"]) {
       if (process.env[key]) env[key] = process.env[key];
     }
-    const child = execFile(executable, [...args], { env, timeout: timeoutMs, maxBuffer: 4_000_000, windowsHide: true }, (error, stdout) => {
-      if (error && (typeof error.code !== "number" || error.killed)) reject(new Error("DOCKER_UNAVAILABLE_OR_TIMEOUT"));
+    const child = execFile(executable, [...args], { env, timeout: timeoutMs, maxBuffer: 4_000_000, windowsHide: true }, (error, stdout, stderr) => {
+      const engineUnavailable = error && /cannot connect to the docker daemon|failed to connect to the docker.*(?:api|daemon)|dockerDesktopLinuxEngine.*(?:cannot find|not found)|connection refused/i.test(String(stderr));
+      if (error && (typeof error.code !== "number" || error.killed || engineUnavailable)) {
+        const code = error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? error.code
+          : error.killed ? "ETIMEDOUT" : ["ENOENT", "EACCES", "ECONNREFUSED"].includes(String(error.code))
+            ? error.code as "ENOENT" | "EACCES" | "ECONNREFUSED" : "UNKNOWN";
+        const classification = code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? "output_limit" : error.killed ? "timeout"
+          : engineUnavailable || code === "ECONNREFUSED" ? "engine_unavailable" : "subprocess_unavailable";
+        reject(new DockerSubprocessError(classification, code, workerExecutionDiagnostics(String(stdout))));
+      }
       else resolvePromise({ code: error ? Number(error.code) : 0, stdout: String(stdout) });
     });
     child.stdin?.end(input);
@@ -238,22 +274,62 @@ export class DockerSandboxExecutor implements SandboxExecutor {
     const deadline = Date.now() + request.policy.timeoutMs - 500;
     let image: PreparedImage | undefined;
     const containers: string[] = [];
+    const operations: ExecutionDiagnostic[] = [];
+    const measured = async <T>(operation: ExecutionDiagnostic["operation"], operationDeadline: number, aggregate: boolean, task: () => Promise<T>): Promise<T> => {
+      const started = Date.now();
+      const base = { operation, startedAt: new Date(started).toISOString(), remainingMs: Math.max(0, operationDeadline - started) };
+      const appendWorker = (records: readonly ExecutionDiagnostic[], failure?: DockerSubprocessError) => {
+        for (const record of records) {
+          operations.push({ ...record, remainingMs: Math.max(0, operationDeadline - Date.parse(record.startedAt)),
+            ...(!record.completed && failure ? { elapsedMs: Math.max(0, Date.now() - Date.parse(record.startedAt)), timedOut: failure.timedOut,
+              classification: failure.classification, subprocessCode: failure.subprocessCode,
+              ...(failure.timedOut ? { reason: aggregate ? "aggregate_execution_deadline" as const : "operation_deadline" as const } : {}) } : {}),
+          });
+        }
+      };
+      try {
+        const result = await task();
+        const command = (result as { result?: CommandResult })?.result;
+        if (command) appendWorker(workerExecutionDiagnostics(command.stdout));
+        operations.push({ ...base, elapsedMs: Math.max(0, Date.now() - started), completed: true, timedOut: false,
+          classification: command?.code ? "exit_nonzero" : "completed", ...(command ? { exitCode: command.code } : {}), message: "Operation completed" });
+        return result;
+      } catch (error) {
+        const subprocess = error instanceof DockerSubprocessError ? error : undefined;
+        if (subprocess) appendWorker(subprocess.executionDiagnostics, subprocess);
+        const timedOut = subprocess?.timedOut || error instanceof Error && error.message === "DOCKER_OPERATION_TIMEOUT";
+        operations.push({ ...base, elapsedMs: Math.max(0, Date.now() - started), completed: false, timedOut,
+          classification: timedOut ? "timeout" : subprocess?.classification ?? "execution_failure",
+          ...(subprocess ? { subprocessCode: subprocess.subprocessCode } : {}),
+          ...(timedOut ? { reason: aggregate ? "aggregate_execution_deadline" as const : "operation_deadline" as const } : {}), message: "Isolated operation failed" });
+        throw error;
+      }
+    };
     try {
-      image = await this.docker.prepare(request.files, deadline);
+      image = await measured("image-preparation", deadline, false, () => this.docker.prepare(request.files, deadline));
       const executionDeadline = Math.min(deadline, Date.now() + request.policy.resources.cpuMillis);
       const checks: SandboxExecutionResult["checks"][number][] = [];
       for (const [id, mode] of [["typecheck", "typecheck"], ["build", "build"], ["tests", "tests"], ["startup-health", "health"]]) {
-        const run = await this.docker.run(image, mode, request.policy, executionDeadline);
+        const run = await measured(mode as ExecutionDiagnostic["operation"], executionDeadline, true, () => this.docker.run(image!, mode, request.policy, executionDeadline));
         containers.push(run.name);
         checks.push({ id, status: run.result.code === 0 ? "passed" : "failed", required: true,
           evidence: `Docker ${mode} exited ${run.result.code} on immutable image ${image.id}`, subjectPaths: [] });
         await this.docker.removeContainer(run.name);
       }
       return { candidateId: request.candidateId, snapshotDigest: request.snapshotDigest, policyDigest: request.policyDigest,
-        sessionId: randomUUID(), imageDigest: image.id, checks, findings: [] };
+        sessionId: randomUUID(), imageDigest: image.id, checks, findings: [], executionDiagnostics: safeExecutionDiagnostics(operations) };
+    } catch (error) {
+      // Preserve only known classifications and supervisor timings, never raw CLI errors.
+      throw new SandboxExecutionError(error instanceof Error && ["DOCKER_OPERATION_TIMEOUT", "DOCKER_UNAVAILABLE_OR_TIMEOUT"].includes(error.message)
+        ? error.message : "DOCKER_EXECUTION_FAILED", operations);
     } finally {
-      for (const name of containers) await this.docker.removeContainer(name);
-      if (image) await this.docker.removeImage(image);
+      try {
+        for (const name of containers) await this.docker.removeContainer(name);
+        if (image) await this.docker.removeImage(image);
+      } catch {
+        operations.push({ operation: "cleanup", startedAt: new Date().toISOString(), elapsedMs: 0, completed: false, timedOut: false, classification: "execution_failure", message: "Isolated cleanup failed" });
+        throw new SandboxExecutionError("DOCKER_CLEANUP_FAILED", operations);
+      }
     }
   }
 }
@@ -294,6 +370,7 @@ export function runtimePreviewSessionBudget(tls: PreviewTls, policy: IsolatedRun
   if (!Number.isSafeInteger(ttlMs) || ttlMs < 1_000 || ttlMs > 300_000) throw new Error("PREVIEW_SESSION_BUDGET_INVALID");
   return Math.min(ttlMs, policy.resources.cpuMillis);
 }
+export const runtimePreviewHealthProbe = "if(!require('node:fs').existsSync('/tmp/project/frontend/dist/index.html'))process.exit(1);fetch('http://127.0.0.1:8080').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))";
 export function previewSessionBootstrap(): { html: string; contentSecurityPolicy: string } {
   const nonce = randomBytes(16).toString("hex");
   return {
@@ -338,9 +415,25 @@ export class PreviewRequestGate {
 export class DockerRuntimePreviewExecutor implements RuntimePreviewExecutor {
   private readonly docker: DockerInfrastructure;
   private readonly tls: PreviewTls;
+  private readonly sessions = new Map<string, Set<() => Promise<void>>>();
+  private readonly starts = new Map<string, Set<Promise<RuntimePreviewExecution>>>();
   constructor(docker: DockerInfrastructure, tls: PreviewTls) { this.docker = docker; this.tls = tls; }
 
+  async stopProject(projectId: string): Promise<void> {
+    await Promise.allSettled([...(this.starts.get(projectId) ?? [])]);
+    for (const cleanup of [...(this.sessions.get(projectId) ?? [])]) await cleanup();
+  }
+
   async start(request: AcceptedRuntimePreviewRequest): Promise<RuntimePreviewExecution> {
+    const pending = this.startSession(request);
+    const starts = this.starts.get(request.projectId) ?? new Set<Promise<RuntimePreviewExecution>>();
+    starts.add(pending);
+    this.starts.set(request.projectId, starts);
+    try { return await pending; }
+    finally { starts.delete(pending); if (!starts.size) this.starts.delete(request.projectId); }
+  }
+
+  private async startSession(request: AcceptedRuntimePreviewRequest): Promise<RuntimePreviewExecution> {
     dockerIsolationArguments(request.policy);
     const sessionBudgetMs = runtimePreviewSessionBudget(this.tls, request.policy);
     const deadline = Date.now() + Math.min(110_000, request.policy.timeoutMs - 500);
@@ -357,9 +450,11 @@ export class DockerRuntimePreviewExecutor implements RuntimePreviewExecutor {
       if (run.result.code !== 0) throw new Error("DOCKER_RUNTIME_START_FAILED");
       let ready = false;
       while (this.docker.remaining(executionDeadline) > 1000) {
-        const health = await this.docker.command(["exec", container, "node", "-e", "fetch('http://127.0.0.1:8080').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"], Math.min(3000, this.docker.remaining(executionDeadline)));
+        // Avoid repeatedly loading the HTTP client while the one-CPU worker
+        // is compiling. The actual HTTP health check still authorizes readiness.
+        const health = await this.docker.command(["exec", container, "node", "-e", runtimePreviewHealthProbe], Math.min(3000, this.docker.remaining(executionDeadline)));
         if (health.code === 0) { ready = true; break; }
-        await new Promise((done) => setTimeout(done, 500));
+        await new Promise((done) => setTimeout(done, Math.min(2000, this.docker.remaining(executionDeadline))));
       }
       if (!ready) throw new Error("DOCKER_RUNTIME_HEALTH_FAILED");
       const token = randomBytes(32).toString("hex");
@@ -418,18 +513,31 @@ export class DockerRuntimePreviewExecutor implements RuntimePreviewExecutor {
       if (!address || typeof address === "string") throw new Error("PREVIEW_GATEWAY_FAILED");
       const finalImage = image;
       const finalGateway = gateway;
-      const expiry = setTimeout(() => {
+      const expiresAt = Date.now() + sessionBudgetMs;
+      let expiry: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = async () => {
+        if (expiry) clearTimeout(expiry);
         finalGateway.closeAllConnections(); finalGateway.close(); this.docker.unregisterGateway(finalGateway);
-        void this.docker.removeContainer(name).then(() => this.docker.removeImage(finalImage)).catch(() => undefined);
+        await this.docker.removeContainer(name);
+        await this.docker.removeImage(finalImage);
+        const sessions = this.sessions.get(request.projectId);
+        sessions?.delete(cleanup);
+        if (!sessions?.size) this.sessions.delete(request.projectId);
+      };
+      const sessions = this.sessions.get(request.projectId) ?? new Set<() => Promise<void>>();
+      sessions.add(cleanup);
+      this.sessions.set(request.projectId, sessions);
+      expiry = setTimeout(() => {
+        void cleanup().catch(() => undefined);
       // Startup has its own bounded deadline; grant the session its bounded
       // lifetime only after the accepted application and HTTPS gateway are ready.
       }, sessionBudgetMs);
       expiry.unref();
-      gateway.once("close", () => clearTimeout(expiry));
+      gateway.once("close", () => { if (expiry) clearTimeout(expiry); });
       keep = true;
       return { projectId: request.projectId, versionId: request.versionId, candidateId: request.candidateId,
         snapshotDigest: request.snapshotDigest, policyDigest: request.policyDigest,
-        sessionId: name, imageDigest: image.id, previewUrl: `https://localhost:${address.port}/session/${token}` };
+        sessionId: name, imageDigest: image.id, previewUrl: `https://localhost:${address.port}/session/${token}`, expiresAt };
     } finally {
       if (!keep) {
         gateway?.closeAllConnections(); gateway?.close();

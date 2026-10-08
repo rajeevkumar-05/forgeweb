@@ -11,6 +11,7 @@ import { dockerWorkflowFromEnvironment } from "./server/generation/docker-infras
 
 function forgeWebDevApi(): Plugin {
   let handler: Promise<ForgeWebRequestHandler> | undefined;
+  let cleanup: (() => Promise<void>) | undefined;
   return {
     name: "forgeweb-dev-api",
     configureServer(server) {
@@ -18,11 +19,12 @@ function forgeWebDevApi(): Plugin {
       resetLlmConfig();
       resetLlmProvider();
       const infrastructure = dockerWorkflowFromEnvironment();
+      cleanup = infrastructure.dispose;
       server.httpServer?.once("close", () => {
         void infrastructure.dispose().catch(() => console.error("Disposable Docker cleanup was incomplete; inspect forgeweb.disposable resources."));
       });
       handler = (async () => {
-        const store = new JsonStore(resolve(process.cwd(), ".forgeweb-data"));
+        const store = new JsonStore(resolve(process.env.FORGEWEB_DATA_DIR ?? ".forgeweb-data"));
         await store.initialize();
         return createForgeWebRequestHandler(
           new BuildWorkflow(store),
@@ -37,6 +39,7 @@ function forgeWebDevApi(): Plugin {
         void handler!.then((api) => api(request, response)).catch(next);
       });
     },
+    async closeBundle() { await cleanup?.(); },
   };
 }
 

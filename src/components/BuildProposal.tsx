@@ -123,10 +123,10 @@ export default function BuildProposal({ build, busy, onConfirm, onRevise, onProj
         </div>
       )}
 
-      {build.filePaths.length > 0 && (
+      {(build.filePaths.length > 0 || Boolean(build.project.currentVersionId)) && (
         <div className="generated-artifacts">
-          <div className="build-proposal-title"><Code2 /> Generated frontend + backend <span>{build.filePaths.length} files</span></div>
-          <ProjectWorkspace projectId={build.projectId} safeGeneration={build.generationMode === "safe"} initialFilePaths={build.filePaths} validationCount={build.validationChecks.filter((check) => check.status === "passed").length} onProjectUpdated={onProjectUpdated} />
+          <div className="build-proposal-title"><Code2 /> Generated frontend + backend <span>{build.filePaths.length > 0 ? `${build.filePaths.length} files` : "Accepted version"}</span></div>
+          <ProjectWorkspace projectId={build.projectId} key={build.projectId} safeGeneration={build.generationMode === "safe"} initialFilePaths={build.filePaths} validationCount={build.validationChecks.filter((check) => check.status === "passed").length} onProjectUpdated={onProjectUpdated} />
           {complete && <p><Check /> {build.validationChecks.filter((check) => check.status === "passed").length} validation checks passed{build.validationChecks.some((check) => check.status === "skipped") ? `, ${build.validationChecks.filter((check) => check.status === "skipped").length} skipped` : ""}. Requirement graph synchronized.</p>}
         </div>
       )}

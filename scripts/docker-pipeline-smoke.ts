@@ -48,7 +48,9 @@ try {
     } catch { /* No response payload or provider exception is printed. */ }
   }
   console.log(JSON.stringify({ groq: { provider: status.provider, model: status.model, available: status.available, realRequest: connectivity } }));
-  const session = await json("/api/safe/session", { token });
+  const account = await json("/api/auth/register", { username: "docker-smoke", password: randomBytes(32).toString("hex") });
+  const session = await json("/api/safe/session", { token }, account.cookie);
+  session.cookie = `${account.cookie}; ${session.cookie}`;
   const created = await json("/api/safe/builds", {
     prompt: "Build a simple task management application where users can create, edit, delete, and mark tasks as completed. Roles: Admin and User. Authentication: email and password. Payments: none. External integrations: none.",
   }, session.cookie);

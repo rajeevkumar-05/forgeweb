@@ -31,7 +31,7 @@ assert.ok(/^[a-z][a-z0-9_]*$/.test(expected.table) && /^\/api\/v1\/[a-z][a-z0-9-
 assert.ok(Object.entries(expected.fields).every(([field, column]) => /^[A-Za-z][A-Za-z0-9]*$/.test(field) && /^[a-z][a-z0-9_]*$/.test(column)));
 assert.ok(Object.keys(expected.updated).every(field => Object.hasOwn(expected.fields, field)));
 const PROMPT = expected.prompt;
-const root = resolve('.forgeweb-data');
+const root = resolve(process.env.FORGEWEB_DATA_DIR ?? '.forgeweb-data');
 await mkdir(root, { recursive: true });
 const primaryStore = join(root, 'forgeweb.json');
 const originalStore = await readFile(primaryStore).catch(() => undefined);
@@ -49,7 +49,7 @@ let runtime: RuntimePreviewExecution | undefined;
 const executor = infrastructure.options.runtimeExecutor;
 const activation = new SafeGenerationActivationService(store, config, {
   ...infrastructure.options,
-  runtimeExecutor: { async start(request) { runtime = await executor.start(request); return runtime; } },
+  runtimeExecutor: { async start(request) { runtime = await executor.start(request); return runtime; }, stopProject: id => executor.stopProject!(id) },
 });
 const server = createForgeWebServer(new BuildWorkflow(store), activation);
 await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
@@ -169,7 +169,14 @@ async function probe() {
 
 const input = createInterface({ input: process.stdin });
 try {
-  cookie = (await api('/api/safe/session', { token: config.token }, false)).cookie!;
+  const username = process.env.FORGEWEB_SMOKE_USERNAME ?? 'runtime-verification';
+  const existingUser = Object.values(store.read().users ?? {}).find(user => user.username === username);
+  assert.ok(!existingUser || process.env.FORGEWEB_SMOKE_PASSWORD, 'SMOKE_LOGIN_CREDENTIALS_REQUIRED');
+  const account = await api(existingUser ? '/api/auth/login' : '/api/auth/register', { username, password: process.env.FORGEWEB_SMOKE_PASSWORD ?? randomBytes(32).toString('hex') }, false);
+  cookie = account.cookie!;
+  const ownerId = account.value.user.id;
+  cookie = `${cookie}; ${(await api('/api/safe/session', { token: config.token })).cookie}`;
+  if (savedDirectory) await api('/api/projects/claim', { confirmed: true, includeVerified: true });
   assert.ok(cookie);
   let candidateId: string;
   if (savedDirectory) {
@@ -207,8 +214,8 @@ try {
   assert.equal(version.candidateManifestDigest, record.manifestDigest);
   assert.equal(fileManifestDigest(files), fileManifestDigest(record.candidate.files));
   assert.deepEqual(files.map(({ path, content, digest }) => ({ path, content, digest })), record.candidate.files.map(({ path, content, digest }) => ({ path, content, digest })));
-  assert.equal(record.ownerId, config.ownerId);
-  assert.equal(record.subjectId, config.subjectId);
+  assert.equal(record.ownerId, savedDirectory ? config.ownerId : ownerId);
+  assert.equal(record.subjectId, savedDirectory ? config.subjectId : ownerId);
   assert.equal(version.editPrompt, PROMPT);
   const requirements = JSON.parse(record.candidate.artifacts.find(artifact => artifact.kind === 'requirements')!.content);
   const entity = requirements.semantics.design.entities.find((entity: { name: string }) => entity.name === expected.entity);
@@ -227,7 +234,7 @@ try {
   assert.deepEqual(reopened.read().versions[versionId], version);
   Object.assign(report, { projectId, buildId: record.buildId, candidateId: record.id, candidateDigest: record.candidateDigest, manifestDigest: record.manifestDigest, fileCount: files.length, validation: record.validation?.status, acceptance: record.status, versionId, versionNumber: version.versionNumber, cas: 'passed', snapshotIntegrity: 'passed', ownership: 'passed', semanticCoverage: 'passed', supported: expected.supported, unsupported: expected.unsupported, exclusions: 'passed', backendFiles: files.filter(file => file.path.startsWith('backend/')).length, frontendFiles: files.filter(file => file.path.startsWith('frontend/')).length, validationChecks: record.validation?.checks.map(check => ({ id: check.id, status: check.status })) });
   console.log(JSON.stringify(report));
-  if (savedDirectory) {
+  if (savedDirectory || !runtime) {
     const activated = await api(`/api/safe/projects/${projectId}/versions/${versionId}/preview`, {});
     assert.equal(activated.value.preview.status, 'ready');
   }
