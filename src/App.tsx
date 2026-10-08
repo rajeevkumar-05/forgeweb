@@ -31,6 +31,7 @@ import SiteNav from "./components/SiteNav";
 import BuildProposal from "./components/BuildProposal";
 import ProjectLibrary from "./components/ProjectLibrary";
 import OwnerAccess from "./components/OwnerAccess";
+import { projectSelectionUrl, selectedProjectId } from "./lib/project-selection";
 import {
   activateSafeGeneration,
   confirmBuild,
@@ -40,6 +41,8 @@ import {
   getLlmStatus,
   getSafeGenerationStatus,
   getOwnerSession,
+  getProjectWorkspace,
+  getBuild,
   reviseBuild,
   waitForBuild,
   type BuildResponse,
@@ -100,7 +103,7 @@ function BrandMark() {
 function Hero() {
   const [prompt, setPrompt] = useState("Build a secure client portal for a creative agency with projects, invoices, files, and role-based access.");
   const [stage, setStage] = useState(-1);
-  const [running, setRunning] = useState(false);
+  const [running, setRunningState] = useState(false);
   const [build, setBuild] = useState<BuildResponse | null>(null);
   const [projectRefreshToken, setProjectRefreshToken] = useState(0);
   const [statusDetail, setStatusDetail] = useState("Ready — your prompt becomes a versioned specification before code is generated.");
@@ -110,7 +113,22 @@ function Hero() {
   const [activationToken, setActivationToken] = useState("");
   const [ownerSession, setOwnerSession] = useState<OwnerSession>({ user: null, migration: { standard: 0, verified: 0 } });
   const [ownerLoading, setOwnerLoading] = useState(true);
+  const selectionSequence = useRef(0);
+  const selectionProjectId = useRef(selectedProjectId(window.location.href));
+  const runningRef = useRef(false);
+  // History listeners must see busy changes immediately, without a stale render closure.
+  const setRunning = (value: boolean) => {
+    runningRef.current = value;
+    setRunningState(value);
+  };
+  const rememberProject = (projectId?: string) => {
+    selectionSequence.current++;
+    const href = projectSelectionUrl(window.location.href, projectId);
+    selectionProjectId.current = selectedProjectId(href);
+    window.history.replaceState(null, "", href);
+  };
   const refreshOwner = async () => {
+    rememberProject();
     const session = await getOwnerSession();
     setOwnerSession(session);
     setSafeStatus(await getSafeGenerationStatus());
@@ -132,10 +150,59 @@ function Hero() {
     getOwnerSession().then(setOwnerSession).catch(() => setStatusDetail("Account service unavailable. Refresh and try again.")).finally(() => setOwnerLoading(false));
   }, []);
 
+  useEffect(() => {
+    if (ownerLoading) return;
+    if (!ownerSession.user) { rememberProject(); return; }
+    const restoreSelection = () => {
+      const projectId = selectedProjectId(window.location.href);
+      selectionProjectId.current = projectId;
+      const sequence = ++selectionSequence.current;
+      if (!projectId) return;
+      const reopen = async () => {
+        try {
+          const workspace = await getProjectWorkspace(projectId);
+          if (sequence !== selectionSequence.current) return;
+          if (!workspace.project.currentBuildId) throw new Error("PROJECT_BUILD_UNAVAILABLE");
+          const saved = await getBuild(workspace.project.currentBuildId);
+          if (sequence !== selectionSequence.current) return;
+          if (saved.projectId !== projectId) throw new Error("PROJECT_LINKAGE_INVALID");
+          openSavedProject(saved);
+        } catch {
+          if (sequence !== selectionSequence.current) return;
+          rememberProject();
+          setStatusDetail("Saved project could not be reopened. Select an owned project from Projects.");
+        }
+      };
+      void reopen();
+    };
+    const reconcileHistory = () => {
+      if (selectedProjectId(window.location.href) === selectionProjectId.current) return;
+      if (runningRef.current) {
+        window.history.replaceState(null, "", projectSelectionUrl(window.location.href, selectionProjectId.current));
+        return;
+      }
+      setBuild(null);
+      setStage(-1);
+      setStatusDetail("Ready for a new project.");
+      restoreSelection();
+    };
+    restoreSelection();
+    window.addEventListener("popstate", reconcileHistory);
+    return () => {
+      selectionSequence.current++;
+      window.removeEventListener("popstate", reconcileHistory);
+    };
+  }, [ownerLoading, ownerSession.user?.id]);
+
+  useEffect(() => {
+    if (build?.projectId) rememberProject(build.projectId);
+  }, [build?.projectId]);
+
   const launchDemo = async (event: FormEvent) => {
     event.preventDefault();
     if (running) return;
 
+    rememberProject();
     setRunning(true);
     setBuild(null);
     setStage(-1);
@@ -234,7 +301,18 @@ function Hero() {
     }
   };
 
+  const handleProjectDeleted = (projectId: string) => {
+    if (build?.projectId === projectId || selectedProjectId(window.location.href) === projectId) {
+      rememberProject();
+      setBuild(null);
+      setStage(-1);
+      setStatusDetail("Project deleted.");
+    }
+    setProjectRefreshToken(value => value + 1);
+  };
+
   const openSavedProject = (savedBuild: BuildResponse) => {
+    rememberProject(savedBuild.projectId);
     setWorkflowMode(savedBuild.generationMode === "safe" ? "safe" : "legacy");
     setBuild(savedBuild);
     setStage(visibleBuildStage(savedBuild));
@@ -373,8 +451,8 @@ function Hero() {
           <ProjectLibrary activeProjectId={build?.projectId} refreshToken={projectRefreshToken} userId={ownerSession.user?.id} busy={running} migration={ownerSession.migration}
             account={<OwnerAccess user={ownerSession.user} loading={ownerLoading} busy={running} onChanged={refreshOwner} />}
             onOpen={openSavedProject}
-            onNew={() => { setBuild(null); setStage(-1); setPrompt(""); setStatusDetail("Ready for a new project."); document.getElementById("product-prompt")?.focus(); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-            onDeleted={projectId => { if (build?.projectId === projectId) { setBuild(null); setStage(-1); setStatusDetail("Project deleted."); } setProjectRefreshToken(value => value + 1); }}
+            onNew={() => { rememberProject(); setBuild(null); setStage(-1); setPrompt(""); setStatusDetail("Ready for a new project."); document.getElementById("product-prompt")?.focus(); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+            onDeleted={handleProjectDeleted}
             onClaimed={async () => { setOwnerSession(await getOwnerSession()); setProjectRefreshToken(value => value + 1); }} />
           <BuildProposal build={build} busy={running} onConfirm={confirmProposal} onRevise={build?.generationMode === "safe" ? undefined : reviseProposal} onProjectUpdated={() => setProjectRefreshToken((value) => value + 1)} />
         </div>

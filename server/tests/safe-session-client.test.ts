@@ -46,7 +46,7 @@ const bindSubmit = new Function("dependencies", `
   const { workflowMode, safeStatus, activationToken, running, prompt,
     activateSafeGeneration, createSafeBuild, createBuild, waitForBuild,
     setRunning, setBuild, setStage, setStatusDetail, setActivationToken,
-    setSafeStatus, setProjectRefreshToken, visibleBuildStage, visibleBuildDetail } = dependencies;
+    setSafeStatus, setProjectRefreshToken, rememberProject, visibleBuildStage, visibleBuildDetail } = dependencies;
   ${submission.replace("event: FormEvent", "event")}
   return launchDemo;
 `) as (dependencies: Record<string, unknown>) => (event: { preventDefault(): void }) => Promise<void>;
@@ -66,6 +66,7 @@ async function submit(mode: "safe" | "legacy" = "safe", status = unauthenticated
     setActivationToken: (value: string) => { state.token = value; },
     setSafeStatus: (value: typeof authenticated) => { state.status = value; },
     setProjectRefreshToken: () => undefined,
+    rememberProject: () => undefined,
     visibleBuildStage: () => 1, visibleBuildDetail: () => build.stageDetail,
   });
   await handler({ preventDefault() {} });
